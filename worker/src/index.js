@@ -325,7 +325,10 @@ const htmlText = (h) => String(h || '')
 // A trailing 'YY is part of the name: "R.E.B.E.L.S. '94".
 const SERIES = String.raw`[A-Z][\w'’.:\/-]*(?:\s+(?:(?:of|the|and|in|vs\.?|de|del|la|el|los)\s+)*(?:[A-Z][\w'’.:\/-]*|['’]\d{2}\b))*`;
 // groups: 1 series, 2 "(...)" e.g. (2005), 3 year in the name ("Secret Files 2005 #1"), 4 from, 5 to
-const PIECE = new RegExp(String.raw`(${SERIES})?\s*(?:\(([^)]*)\)\s*)?(?:((?:19|20)\d{2})\s+(?=#))?(?:Vol(?:ume)?\.?\s*\d+\s*)?(?:#\s*|\b)(\d{1,4}(?:\.\d)?)(?:\s*(?:-|–|to|through)\s*#?\s*(\d{1,4}(?:\.\d)?))?`);
+const VOL = String.raw`(?:[Vv][Oo][Ll](?:ume)?\.?|[Vv]\.)\s*\d+`;
+const PIECE = new RegExp(String.raw`(${SERIES})?\s*(?:\(([^)]*)\)\s*)?(?:((?:19|20)\d{2})\s+(?=#))?(?:${VOL}\s*[,:]?\s*)?(?:#\s*|\b)(\d{1,4}(?:\.\d)?)(?:\s*(?:-|–|to|through|al?)\s*#?\s*(\d{1,4}(?:\.\d)?))?`);
+// "X-Factor vol. 3" on its own: names the series for the numbers that follow ("X-Factor vol. 3, 25-27")
+const SERIES_VOL_ONLY = new RegExp(String.raw`^\s*(${SERIES})\s*,?\s*${VOL}\s*$`);
 const JUNK = /^(?:Collects|Collecting|Collected|Issues?|Includes|Including|Featuring|Plus|Material|Stories|From|Originally|And|The|This|Volume|Vol\.?|Book|Part|Chapter|TPB|HC|Recopila|Contiene|Incluye|Los|Las|El|La|USA|Números?|Nº)$/i;
 
 // loose: the text IS the list (pasted by the user), no "Collects" keyword needed
@@ -339,7 +342,15 @@ function parseCollects(text, loose = false) {
   const out = [];
   for (const list of lists) {
     let series = '', year = '', nameYear = '';
-    for (const piece of list.split(/,|;|\n|\band\b|&|\bplus\b/i)) {
+    for (let piece of list.split(/,|;|\n|\band\b|\s+y\s+|&|\bplus\b/i)) {
+      piece = piece.replace(/\bone[- ]?shot\b/gi, '#1'); // "X-Men: Messiah Complex One-Shot"
+      const sv = SERIES_VOL_ONLY.exec(piece);
+      if (sv) {
+        const words = sv[1].replace(/\s+[Vv]ol\.?$/, '').split(/\s+/);
+        while (words.length && JUNK.test(words[0])) words.shift();
+        if (words.length) { series = words.join(' '); year = ''; nameYear = ''; }
+        continue;
+      }
       const p = PIECE.exec(piece);
       if (!p) continue;
       let name = (p[1] || '').trim().replace(/[:.]+$/, '');
@@ -422,7 +433,7 @@ async function candidates(env, e, maxNum, ctxYear, publisher) {
     if (publisher) pick((v) => v.publisher?.name === publisher);
     else pick((v) => US_PUBLISHERS.has(v.publisher?.name));
     if (e.year) pick((v) => String(v.start_year) === e.year);
-    pick((v) => (v.count_of_issues || 0) >= maxNum);
+    // (no filter on count_of_issues: numbering may not start at 1; chooseRun checks the real issue)
     if (ctxYear) pick((v) => !v.start_year || +v.start_year <= ctxYear);
     return c.sort((a, b) => (+b.start_year || 0) - (+a.start_year || 0));
   };
@@ -449,22 +460,23 @@ async function candidates(env, e, maxNum, ctxYear, publisher) {
 // 1) the one closest in time to the series that are unambiguous in the same list (anchor year);
 // 2) else the most recent run whose issue #maxNum already existed when the collection came out;
 // 3) else the longest run.
+// A run qualifies only if it really has issue #maxNum: numbering often doesn't start at 1
+// ("The Uncanny X-Men" (1981) runs #142-544 with only 405 issues). Candidates are checked in order of
+// likelihood and the first that qualifies wins, so usually only one or two lookups are needed.
 async function chooseRun(env, c, maxNum, ctxYear, anchor) {
   if (c.length <= 1) return c[0] || null;
-  if (anchor) {
-    const score = (v) => Math.abs((+v.start_year || 0) - anchor) + (+v.start_year > anchor ? 0.5 : 0);
-    return c.slice().sort((a, b) => score(a) - score(b))[0];
+  const score = (v) => Math.abs((+v.start_year || 0) - anchor) + (+v.start_year > anchor ? 0.5 : 0);
+  const ordered = anchor ? c.slice().sort((a, b) => score(a) - score(b)) : c; // c: most recent first
+  for (const v of ordered.slice(0, 6)) {
+    const it = (await volIssueList(env, v.id)).issues.find((i) => parseFloat(i.issue_number) === maxNum);
+    if (!it) continue;
+    if (anchor || !ctxYear) return v;
+    // no anchor: the issue must already exist when the collection came out
+    const r = await cv(env, `/issue/4000-${it.id}/`, { field_list: 'id,cover_date' }, 7 * DAY);
+    const y = +(r.results?.cover_date || '').slice(0, 4);
+    if (y && y <= ctxYear) return v;
   }
-  if (ctxYear) {
-    for (const v of c.slice(0, 5)) {
-      const it = (await volIssueList(env, v.id)).issues.find((i) => parseFloat(i.issue_number) === maxNum);
-      if (!it) continue;
-      const r = await cv(env, `/issue/4000-${it.id}/`, { field_list: 'id,cover_date' }, 7 * DAY);
-      const y = +(r.results?.cover_date || '').slice(0, 4);
-      if (y && y <= ctxYear) return v;
-    }
-  }
-  return c.slice().sort((a, b) => (b.count_of_issues || 0) - (a.count_of_issues || 0))[0];
+  return anchor ? ordered[0] : c.slice().sort((a, b) => (b.count_of_issues || 0) - (a.count_of_issues || 0))[0];
 }
 
 async function resolveGroups(env, groups, ctxYear, publisher) {
@@ -476,10 +488,10 @@ async function resolveGroups(env, groups, ctxYear, publisher) {
     bySeries.set(k, e);
   }
   // "Green Lantern: Sinestro Corps Special" and "Sinestro Corps Special" are the same book
-  const keys = [...bySeries.keys()];
-  for (const k of keys) {
-    const [n] = k.split('|');
-    if (keys.some((o) => o !== k && bySeries.has(o) && n.endsWith(' ' + o.split('|')[0]))) bySeries.delete(k);
+  // (only the part after a colon counts: "Uncanny X-Men" is NOT "X-Men")
+  for (const [k, e] of [...bySeries]) {
+    const after = e.series.includes(':') ? norm(e.series.split(':').slice(1).join(' ')) : '';
+    if (after && [...bySeries.keys()].some((o) => o !== k && o.split('|')[0] === after)) bySeries.delete(k);
   }
   const entries = [...bySeries.values()];
   for (const e of entries) {
@@ -490,10 +502,19 @@ async function resolveGroups(env, groups, ctxYear, publisher) {
   const years = entries.filter((e) => e.cands.length === 1 && e.cands[0].start_year).map((e) => +e.cands[0].start_year).sort((a, b) => a - b);
   const anchor = years.length ? years[Math.floor(years.length / 2)] : 0;
 
+  for (const e of entries) e.found = await chooseRun(env, e.cands, e.maxNum, ctxYear, anchor);
+  // no unambiguous series to date the list: use the runs just chosen, then choose the doubtful ones again
+  // ("X-Men: Messiah Complex" #1: the 2007 one-shot, not the 2008 hardcover, next to runs from 2004-2006)
+  if (!anchor) {
+    const ys = entries.filter((e) => e.found?.start_year).map((e) => +e.found.start_year).sort((a, b) => a - b);
+    const anchor2 = ys.length ? ys[Math.floor(ys.length / 2)] : 0;
+    if (anchor2) for (const e of entries) if (e.cands.length > 1) e.found = await chooseRun(env, e.cands, e.maxNum, ctxYear, anchor2);
+  }
+
   const result = [];
   const volIds = new Set();
   for (const e of entries) {
-    const found = await chooseRun(env, e.cands, e.maxNum, ctxYear, anchor);
+    const found = e.found;
     if (found && volIds.has(found.id)) continue;
     if (found) volIds.add(found.id);
     const issues = found ? await issuesInRanges(env, found.id, e.ranges) : [];
