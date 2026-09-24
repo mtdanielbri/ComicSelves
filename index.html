@@ -100,6 +100,7 @@ details summary { cursor: pointer; color: var(--muted); font-size: 14px; }
 #scanner video { flex: 1; width: 100%; object-fit: cover; min-height: 0; }
 #scanner .bar { padding: 12px 16px; display: flex; gap: 8px; justify-content: space-between; align-items: center; color: #fff; }
 #scanner .bar input { background: #222; color: #fff; border-color: #444; }
+#scanner .diag { font-size: 11px; color: #888; min-height: 1em; }
 #scanner [data-act=scan-torch][data-on="1"] { background: #f5c518; color: #000; }
 #scanner .frame { position: absolute; left: 10%; right: 10%; top: 40%; height: 18%; border: 3px solid var(--accent); border-radius: 12px; pointer-events: none; }
 .people a { text-decoration: none; border-bottom: 1px dotted var(--muted); }
@@ -131,6 +132,11 @@ details summary { cursor: pointer; color: var(--muted); font-size: 14px; }
     <button class="btn" data-act="scan-torch" hidden title="Linterna">🔦</button>
     <button class="btn" data-act="scan-close">Cerrar</button>
   </div>
+  <div class="bar" style="padding-top:0">
+    <label class="btn primary grow" style="text-align:center">📸 Hacer foto al código
+      <input type="file" accept="image/*" capture="environment" id="scanPhoto" hidden></label>
+  </div>
+  <div class="bar diag" style="padding-top:0"></div>
   <form class="bar" id="scanManual" style="padding-top:0">
     <input type="text" inputmode="numeric" placeholder="…o escribe el ISBN" class="grow" autocomplete="off">
     <button class="btn primary">Ir</button>
@@ -140,6 +146,7 @@ details summary { cursor: pointer; color: var(--muted); font-size: 14px; }
 <script>
 'use strict';
 const API = 'https://comicselves.mtdanielbri.workers.dev/api';
+const APP_VERSION = '2026-09-24 · escáner con foto'; // shown in Ajustes, to check the phone has the latest
 const LABEL = { owned: 'Tengo', read: 'Leído', pending: 'Pendiente' };
 const FLAGS = ['owned', 'read', 'pending'];
 const $main = document.getElementById('main');
@@ -470,15 +477,51 @@ function scanFrame(src, { band, invert }) {
   }
   return scanCanvas;
 }
-// try every frame version with every reader (used by the tests and the live loop)
+// try every frame version with every reader (photos and tests)
 async function detectAll(src, readers) {
   for (const mode of SCAN_MODES) {
     for (const r of readers) {
-      const codes = await r.detect(scanFrame(src, mode)).catch(() => []);
+      const codes = (await r.detect(scanFrame(src, mode)).catch(() => [])).filter((c) => ean13Ok(c.rawValue));
       if (codes.length) return codes;
     }
   }
   return [];
+}
+const rotate90 = (src) => {
+  const w = src.width, h = src.height;
+  const c = document.createElement('canvas'); c.width = h; c.height = w;
+  const x = c.getContext('2d'); x.translate(h, 0); x.rotate(Math.PI / 2); x.drawImage(src, 0, 0);
+  return c;
+};
+
+// Photo taken with the phone's own camera app: full resolution and proper focus.
+async function scanPhoto(file) {
+  const box = document.getElementById('scanner');
+  const status = box.querySelector('.status');
+  const diag = box.querySelector('.diag');
+  status.textContent = 'Leyendo la foto…';
+  try {
+    const native = await getNative();
+    const zx = await getZxing().catch(() => null);
+    const readers = [native, zx].filter(Boolean);
+    if (!readers.length) throw new Error('no hay lector disponible');
+    const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    // barcode may be sideways in the photo: try it rotated too
+    let codes = await detectAll(bmp, readers);
+    if (!codes.length) codes = await detectAll(rotate90(bmp), readers);
+    diag.textContent = `foto ${bmp.width}×${bmp.height} · lectores: ${[native && 'Android', zx && 'ZXing'].filter(Boolean).join(' + ')}`;
+    const isbn = codes.map((c) => c.rawValue).find((c) => /^97[89]/.test(c));
+    if (isbn) { stopScan(); navigator.vibrate?.(80); goIsbn(isbn); return; }
+    status.textContent = codes.length
+      ? `${codes[0].rawValue}: no es un ISBN. Busca el código que empieza por 978`
+      : 'No he encontrado el código en la foto. Prueba más cerca, con el código recto y sin reflejos.';
+  } catch (e) {
+    status.textContent = `No se pudo leer la foto: ${e.message}`;
+  }
+}
+function goIsbn(isbn) {
+  if (ui.searchMode !== 'books') { ui.searchMode = 'books'; store.set('cs_mode', 'books'); }
+  go(`#/book/${enc('isbn:' + isbn)}`);
 }
 const ean13Ok = (c) => /^\d{13}$/.test(c) && (10 - ([...c.slice(0, 12)].reduce((s, d, i) => s + +d * (i % 2 ? 3 : 1), 0) % 10)) % 10 === +c[12];
 
@@ -489,6 +532,8 @@ async function startScan() {
   const video = box.querySelector('video');
   const status = box.querySelector('.status');
   const torchBtn = box.querySelector('[data-act=scan-torch]');
+  const diag = box.querySelector('.diag');
+  diag.textContent = '';
   status.textContent = 'Abriendo cámara…';
   box.classList.add('show');
   try {
@@ -517,7 +562,8 @@ async function startScan() {
     await video.play();
     status.textContent = 'Apunta al código de barras del tomo';
 
-    let n = 0, last = '', lastAt = 0, warned = '';
+    let n = 0, last = '', lastAt = 0, warned = '', lastErr = '';
+    const names = () => readers.map((r) => (r === native ? 'Android' : 'ZXing')).join(' + ');
     const tick = async () => {
       if (!scanStream) return;
       try {
@@ -531,12 +577,7 @@ async function startScan() {
             if (!ean13Ok(c)) continue;
             if (/^97[89]/.test(c)) {
               // same code twice in a row = no misread
-              if (c === last && Date.now() - lastAt < 2000) {
-                stopScan(); navigator.vibrate?.(80);
-                if (ui.searchMode !== 'books') { ui.searchMode = 'books'; store.set('cs_mode', 'books'); }
-                go(`#/book/${enc('isbn:' + c)}`);
-                return;
-              }
+              if (c === last && Date.now() - lastAt < 2000) { stopScan(); navigator.vibrate?.(80); goIsbn(c); return; }
               last = c; lastAt = Date.now();
               status.textContent = `Leyendo ${c}…`;
             } else if (warned !== c) {
@@ -545,13 +586,20 @@ async function startScan() {
             }
           }
         }
-      } catch {}
+      } catch (e) { lastErr = e?.message || String(e); }
+      // diagnostics, to tell "camera/reader problem" from "can't see the code"
+      if (n % 10 === 0) diag.textContent = `cámara ${video.videoWidth}×${video.videoHeight} · lectores: ${names()} · intentos: ${n}${lastErr ? ' · error: ' + lastErr : ''}`;
       scanTimer = setTimeout(tick, 60);
     };
     tick();
   } catch (e) {
-    stopScan();
-    toast(e?.name === 'NotAllowedError' ? 'Permite el acceso a la cámara para escanear' : 'No se pudo abrir la cámara o el lector');
+    // no live camera: the photo button and the ISBN field still work
+    scanStream?.getTracks().forEach((t) => t.stop());
+    scanStream = null;
+    status.textContent = e?.name === 'NotAllowedError'
+      ? 'Sin permiso para la cámara. Usa «Hacer foto» o escribe el ISBN.'
+      : 'No se pudo abrir la cámara en directo. Usa «Hacer foto» o escribe el ISBN.';
+    diag.textContent = `error: ${e?.name || ''} ${e?.message || ''}`;
   }
 }
 function stopScan() {
@@ -1117,7 +1165,8 @@ function viewSettings() {
       <button class="btn" id="exp" ${token ? '' : 'disabled'}>Descargar colección (JSON)</button>
     </div>
     <p class="muted small">Datos: <a href="https://comicvine.gamespot.com/" target="_blank" rel="noopener">Comic Vine</a>,
-      Google Books y <a href="https://openlibrary.org/" target="_blank" rel="noopener">Open Library</a>.</p>`;
+      Google Books y <a href="https://openlibrary.org/" target="_blank" rel="noopener">Open Library</a>.</p>
+    <p class="muted small">Versión: ${esc(APP_VERSION)}</p>`;
   document.getElementById('tsave').onclick = async () => {
     const st = document.getElementById('tstat');
     token = document.getElementById('tok').value.trim();
@@ -1156,6 +1205,11 @@ document.addEventListener('click', (e) => {
   else if (act === 'unlink') unlink(id, +el.dataset.cv);
 });
 
+document.getElementById('scanPhoto').onchange = (e) => {
+  const f = e.target.files?.[0];
+  e.target.value = '';
+  if (f) scanPhoto(f);
+};
 document.getElementById('scanManual').onsubmit = (e) => {
   e.preventDefault();
   const input = e.target.querySelector('input');
