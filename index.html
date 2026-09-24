@@ -1,0 +1,752 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ComicSelves</title>
+<meta name="theme-color" content="#1b1d24">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<style>
+:root {
+  --bg: #f4f2ee; --surface: #ffffff; --surface2: #ebe8e2; --text: #1b1d24; --muted: #6b6f7b;
+  --line: #dcd8d0; --accent: #d7263d; --accent-text: #fff;
+  --owned: #1f8a4c; --read: #2563c9; --pending: #c47a0a;
+  --radius: 12px; --shadow: 0 1px 3px rgba(0,0,0,.08);
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #14151a; --surface: #1e2027; --surface2: #282b34; --text: #eceef3; --muted: #9aa0ad;
+    --line: #333745; --accent: #ef4056; --owned: #34b36a; --read: #5b8def; --pending: #e0a030; --shadow: none; }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+a { color: inherit; }
+button, input, select { font: inherit; color: inherit; }
+header { position: sticky; top: 0; z-index: 10; background: var(--text); color: var(--bg);
+  display: flex; align-items: center; gap: 8px; padding: 10px 16px; padding-top: max(10px, env(safe-area-inset-top)); }
+header h1 { margin: 0; font-size: 18px; font-weight: 800; letter-spacing: -.02em; margin-right: auto; }
+header h1 span { color: var(--accent); }
+nav a { text-decoration: none; padding: 6px 10px; border-radius: 999px; font-weight: 600; font-size: 14px; opacity: .75; }
+nav a.on { background: var(--accent); color: var(--accent-text); opacity: 1; }
+main { max-width: 920px; margin: 0 auto; padding: 16px; padding-bottom: 80px; }
+h2 { font-size: 20px; margin: 4px 0 12px; }
+h3 { font-size: 16px; margin: 20px 0 8px; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.grow { flex: 1; min-width: 0; }
+input[type=text], input[type=search], input[type=number], input[type=password], input[type=url], select {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+input[type=number] { width: 80px; }
+.btn { background: var(--surface2); border: 1px solid var(--line); border-radius: 10px; padding: 9px 14px;
+  cursor: pointer; font-weight: 600; white-space: nowrap; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.btn:disabled { opacity: .5; cursor: default; }
+.seg { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
+.seg button { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 5px 12px;
+  cursor: pointer; font-size: 13px; font-weight: 600; }
+.seg button.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+.list { display: flex; flex-direction: column; gap: 8px; }
+.card { display: flex; gap: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 10px; box-shadow: var(--shadow); align-items: flex-start; }
+.card .cover { width: 56px; flex: none; }
+.card .body { flex: 1; min-width: 0; }
+.card .title { font-weight: 700; text-decoration: none; display: block; overflow-wrap: anywhere; }
+.cover { aspect-ratio: 2/3; border-radius: 6px; background: var(--surface2) center/cover no-repeat; display: block; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 12px; }
+.tile { text-decoration: none; display: flex; flex-direction: column; gap: 4px; }
+.tile .t { font-size: 13px; font-weight: 600; line-height: 1.25; overflow: hidden; display: -webkit-box;
+  -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.tile .dots { display: flex; gap: 4px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; }
+.dot.owned { background: var(--owned); } .dot.read { background: var(--read); } .dot.pending { background: var(--pending); }
+.chips { display: inline-flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.chip { border: 1.5px solid var(--line); background: transparent; border-radius: 999px; padding: 3px 10px;
+  font-size: 12px; font-weight: 700; cursor: pointer; color: var(--muted); }
+.chip.owned.on { background: var(--owned); border-color: var(--owned); color: #fff; }
+.chip.read.on { background: var(--read); border-color: var(--read); color: #fff; }
+.chip.pending.on { background: var(--pending); border-color: var(--pending); color: #fff; }
+.chips.big .chip { font-size: 14px; padding: 7px 16px; }
+.badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+  background: var(--surface2); color: var(--muted); margin-right: 4px; }
+.badge.tomo { background: color-mix(in srgb, var(--owned) 18%, transparent); color: var(--owned); }
+.detail { display: grid; grid-template-columns: 160px 1fr; gap: 16px; align-items: start; }
+.detail .cover { width: 100%; }
+@media (max-width: 560px) { .detail { grid-template-columns: 110px 1fr; gap: 12px; } }
+dl.info { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 8px 0; font-size: 14px; }
+dl.info dt { color: var(--muted); } dl.info dd { margin: 0; overflow-wrap: anywhere; }
+.desc { white-space: pre-line; font-size: 14px; }
+details summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; margin: 10px 0; }
+.stats { display: flex; gap: 10px; flex-wrap: wrap; margin: 8px 0 12px; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; min-width: 88px; }
+.stat b { display: block; font-size: 20px; }
+.stat span { font-size: 12px; color: var(--muted); }
+.progress { height: 8px; background: var(--surface2); border-radius: 999px; overflow: hidden; margin: 6px 0; display: flex; }
+.progress i { display: block; height: 100%; }
+.issue-row { display: flex; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.issue-row .cover { width: 40px; flex: none; }
+.issue-row label { display: flex; gap: 10px; align-items: center; flex: 1; min-width: 0; cursor: pointer; }
+.empty { text-align: center; color: var(--muted); padding: 40px 10px; }
+.spinner { width: 22px; height: 22px; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%;
+  animation: spin .8s linear infinite; margin: 30px auto; }
+@keyframes spin { to { transform: rotate(360deg); } }
+#toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--text); color: var(--bg);
+  padding: 10px 16px; border-radius: 10px; font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 50; max-width: 90vw; }
+#toast.show { opacity: 1; }
+#scanner { position: fixed; inset: 0; background: #000; z-index: 40; display: none; flex-direction: column; }
+#scanner.show { display: flex; }
+#scanner video { flex: 1; width: 100%; object-fit: cover; min-height: 0; }
+#scanner .bar { padding: 16px; display: flex; justify-content: space-between; align-items: center; color: #fff; }
+#scanner .frame { position: absolute; left: 10%; right: 10%; top: 40%; height: 18%; border: 3px solid var(--accent); border-radius: 12px; pointer-events: none; }
+.people a { text-decoration: none; border-bottom: 1px dotted var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Comic<span>Selves</span></h1>
+  <nav>
+    <a href="#/search" data-nav="search">Buscar</a>
+    <a href="#/collection" data-nav="collection">Colección</a>
+    <a href="#/settings" data-nav="settings" aria-label="Ajustes">⚙</a>
+  </nav>
+</header>
+<main id="main"></main>
+<div id="toast"></div>
+<div id="scanner">
+  <video playsinline muted></video>
+  <div class="frame"></div>
+  <div class="bar"><span>Apunta al código de barras del tomo</span><button class="btn" data-act="scan-close">Cerrar</button></div>
+</div>
+
+<script>
+'use strict';
+const API = 'https://comicselves.mtdanielbri.workers.dev/api';
+const LABEL = { owned: 'Tengo', read: 'Leído', pending: 'Pendiente' };
+const FLAGS = ['owned', 'read', 'pending'];
+const $main = document.getElementById('main');
+
+// ---------- storage / state ----------
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+};
+let token = store.get('cs_token') || '';
+const coll = new Map();   // id -> item saved in the collection
+const seen = new Map();   // id -> base item seen in searches (not necessarily saved)
+let collLoaded = false;
+const ui = { searchMode: store.get('cs_mode') || 'books', lastSearch: null, collFilter: 'all', collKind: 'all', collText: '' };
+
+// ---------- helpers ----------
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const enc = encodeURIComponent;
+const year = (d) => (d || '').slice(0, 4);
+const fmtDate = (d) => {
+  if (!d) return '';
+  const [y, m, dd] = d.split('-');
+  if (!m) return y;
+  const months = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+  return `${dd && dd !== '01' ? +dd + ' ' : ''}${months[+m - 1]} ${y}`;
+};
+const htmlToText = (h) => {
+  if (!h) return '';
+  const doc = new DOMParser().parseFromString(String(h).replace(/<\/(p|h\d|li|tr)>/gi, '\n').replace(/<br\s*\/?>/gi, '\n'), 'text/html');
+  return (doc.body.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
+};
+const cvImg = (img, size = 'medium') => (img && (img[`${size}_url`] || img.small_url || img.thumb_url)) || '';
+const isPlaceholder = (u) => !u || /\/6373148-blank|image_not_available/i.test(u);
+const coverStyle = (u) => (u && !isPlaceholder(u) ? ` style="background-image:url('${esc(u).replace(/'/g, '%27')}')"` : '');
+const issueNum = (n) => (n == null || n === '' ? '' : `#${n}`);
+const isIsbn = (s) => /^(97[89])?\d{9}[\dXx]$/.test(s.replace(/[-\s]/g, ''));
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('show'), 2600);
+}
+const spinner = () => '<div class="spinner"></div>';
+
+async function api(path, opts = {}) {
+  const r = await fetch(API + path, {
+    ...opts, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(opts.headers || {}) },
+  });
+  if (r.status === 401) { location.hash = '#/settings'; throw new Error('Clave de la app incorrecta'); }
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || `Error ${r.status}`);
+  return d;
+}
+
+// ---------- item builders ----------
+function bookBase(b) {
+  const id = b.isbn ? `isbn:${b.isbn}` : b.gid ? `gb:${b.gid}` : `manual:${crypto.randomUUID()}`;
+  const base = { id, kind: 'book', title: b.title || '(sin título)', data: {
+    isbn: b.isbn || '', authors: b.authors || [], publisher: b.publisher || '', date: b.date || '', pages: b.pages || null,
+    cover: b.cover || '', language: b.language || '', source: b.source || '', gid: b.gid || '',
+    description: (b.description || '').slice(0, 2000),
+  } };
+  seen.set(id, base);
+  return base;
+}
+function issueBase(r) {
+  const vol = r.volume || {};
+  const base = { id: `cv-issue:${r.id}`, kind: 'issue', title: `${vol.name || ''} ${issueNum(r.issue_number)}`.trim(), data: {
+    cvId: r.id, volume: { id: vol.id, name: vol.name }, number: r.issue_number ?? '', name: r.name || '',
+    date: r.cover_date || '', cover: cvImg(r.image, 'small'),
+  } };
+  seen.set(base.id, base);
+  return base;
+}
+const itemOf = (id) => coll.get(id) || seen.get(id);
+const flagsOf = (id) => coll.get(id) || { owned: false, read: false, pending: false };
+
+// tomos that contain a given Comic Vine issue
+function tomosWith(cvId) {
+  const out = [];
+  for (const it of coll.values()) {
+    if (it.kind === 'book' && (it.data.contains || []).some((c) => c.cvId === cvId)) out.push(it);
+  }
+  return out;
+}
+const ownedViaTomo = (cvId) => tomosWith(cvId).some((t) => t.owned);
+
+// ---------- persistence ----------
+async function loadCollection() {
+  const d = await api('/items');
+  coll.clear();
+  d.items.forEach((it) => coll.set(it.id, it));
+  collLoaded = true;
+}
+function isEmpty(it) { return !it.owned && !it.read && !it.pending && !(it.data.contains || []).length; }
+
+async function persist(it) {
+  const prev = coll.get(it.id);
+  if (isEmpty(it)) coll.delete(it.id); else coll.set(it.id, it);
+  try {
+    if (isEmpty(it)) { if (prev) await api(`/items/${enc(it.id)}`, { method: 'DELETE' }); }
+    else await api(`/items/${enc(it.id)}`, { method: 'PUT', body: JSON.stringify(it) });
+  } catch (e) {
+    if (prev) coll.set(it.id, prev); else coll.delete(it.id);
+    toast(`No se pudo guardar: ${e.message}`);
+    throw e;
+  }
+}
+
+async function toggleFlag(id, key) {
+  const base = itemOf(id);
+  if (!base) return;
+  const cur = coll.get(id);
+  const it = cur ? { ...cur, data: { ...base.data, ...cur.data } } : { ...base, data: { ...base.data }, owned: false, read: false, pending: false };
+  it[key] = !it[key];
+  if (key === 'read' && it.read) it.pending = false;   // read clears "pending"
+  if (key === 'pending' && it.pending) it.read = false;
+  try { await persist(it); } catch { /* toast already shown */ }
+  refreshChips(id);
+}
+
+function chips(id, big = false) {
+  const f = flagsOf(id);
+  return `<span class="chips${big ? ' big' : ''}" data-chips="${esc(id)}">${FLAGS.map((k) =>
+    `<button class="chip ${k}${f[k] ? ' on' : ''}" data-act="flag" data-id="${esc(id)}" data-key="${k}" aria-pressed="${!!f[k]}">${LABEL[k]}</button>`).join('')}</span>`;
+}
+function refreshChips(id) {
+  document.querySelectorAll(`[data-chips="${CSS.escape(id)}"]`).forEach((el) => {
+    el.outerHTML = chips(id, el.classList.contains('big'));
+  });
+  document.querySelectorAll('[data-refresh-stats]').forEach((el) => el.dispatchEvent(new Event('refresh')));
+}
+
+// ---------- router ----------
+const routes = {
+  search: viewSearch, collection: viewCollection, settings: viewSettings,
+  book: viewBook, volume: viewVolume, issue: viewIssue, person: viewPerson, arc: viewArc,
+};
+async function router() {
+  const [name, ...rest] = (location.hash.replace(/^#\/?/, '') || (token ? 'collection' : 'settings')).split('/');
+  const view = routes[name] || viewSearch;
+  document.querySelectorAll('[data-nav]').forEach((a) => a.classList.toggle('on', a.dataset.nav === name));
+  if (!token && name !== 'settings') { location.hash = '#/settings'; return; }
+  const my = (router.seq = (router.seq || 0) + 1);
+  $main.innerHTML = spinner();
+  try {
+    if (token && !collLoaded && name !== 'settings') await loadCollection();
+    if (my !== router.seq) return;
+    await view(...rest.map(decodeURIComponent));
+  } catch (e) {
+    if (my === router.seq) $main.innerHTML = `<div class="empty">⚠️ ${esc(e.message)}</div>`;
+  }
+  window.scrollTo(0, 0);
+}
+window.addEventListener('hashchange', router);
+
+// ---------- views: search ----------
+const MODES = [
+  ['books', 'Tomos'], ['volume', 'Series'], ['issue', 'Números'], ['person', 'Autores'], ['story_arc', 'Sagas'],
+];
+function viewSearch() {
+  const hasScan = 'BarcodeDetector' in window && navigator.mediaDevices;
+  $main.innerHTML = `
+    <form class="row" id="sform">
+      <input type="search" id="q" class="grow" placeholder="${ui.searchMode === 'books' ? 'Título o ISBN…' : 'Buscar en Comic Vine…'}" value="${esc(ui.lastSearch?.q || '')}" autocomplete="off">
+      <button class="btn primary">Buscar</button>
+      ${hasScan ? '<button type="button" class="btn" data-act="scan" title="Escanear código de barras">📷</button>' : ''}
+    </form>
+    <div class="seg" id="modes">${MODES.map(([k, l]) => `<button type="button" data-mode="${k}" class="${ui.searchMode === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <p class="muted small">${ui.searchMode === 'books'
+      ? 'Tomos en español o inglés por título o ISBN (Google Books y Open Library).'
+      : 'Ediciones originales (americanas) desde Comic Vine.'}</p>
+    <div id="results"></div>`;
+  document.getElementById('modes').onclick = (e) => {
+    const b = e.target.closest('[data-mode]'); if (!b) return;
+    ui.searchMode = b.dataset.mode; store.set('cs_mode', ui.searchMode); ui.lastSearch = null; viewSearch();
+    document.getElementById('q').focus();
+  };
+  document.getElementById('sform').onsubmit = (e) => {
+    e.preventDefault();
+    const q = document.getElementById('q').value.trim();
+    if (q) runSearch(q, ui.searchMode, 1);
+  };
+  if (ui.lastSearch && ui.lastSearch.mode === ui.searchMode) renderResults();
+}
+
+async function runSearch(q, mode, page) {
+  const box = document.getElementById('results');
+  if (!box) return;
+  if (mode === 'books' && isIsbn(q)) { location.hash = `#/book/${enc('isbn:' + q.replace(/[-\s]/g, '').toUpperCase())}`; return; }
+  box.innerHTML = spinner();
+  try {
+    const d = mode === 'books'
+      ? await api(`/books/search?q=${enc(q)}&page=${page}`)
+      : await api(`/cv/search?type=${mode}&q=${enc(q)}&page=${page}`);
+    const prev = page > 1 && ui.lastSearch ? ui.lastSearch.results : [];
+    ui.lastSearch = { q, mode, page, results: prev.concat(d.results || []), total: d.total };
+    renderResults();
+  } catch (e) { box.innerHTML = `<div class="empty">⚠️ ${esc(e.message)}</div>`; }
+}
+
+function renderResults() {
+  const box = document.getElementById('results');
+  const { mode, results, q, page, total } = ui.lastSearch;
+  if (!results.length) {
+    box.innerHTML = `<div class="empty">Sin resultados.${mode === 'books' ? `<br><br><button class="btn" data-act="manual">Añadir un tomo a mano</button>` : ''}</div>`;
+    return;
+  }
+  const more = mode === 'books' ? results.length >= page * 20 : total > results.length;
+  box.innerHTML = `<div class="list">${results.map((r) => resultCard(r, mode)).join('')}</div>
+    <div class="row" style="justify-content:center;margin-top:14px">
+      ${more ? '<button class="btn" id="more">Cargar más</button>' : ''}
+      ${mode === 'books' ? '<button class="btn" data-act="manual">¿No está? Añadir a mano</button>' : ''}
+    </div>`;
+  const m = document.getElementById('more');
+  if (m) m.onclick = () => runSearch(q, mode, page + 1);
+}
+
+function resultCard(r, mode) {
+  if (mode === 'books') {
+    const b = bookBase(r);
+    const sub = [b.data.authors.slice(0, 2).join(', '), b.data.publisher, year(b.data.date)].filter(Boolean).join(' · ');
+    return card(`#/book/${enc(b.id)}`, b.data.cover, b.title, sub + (b.data.isbn ? `<br>ISBN ${esc(b.data.isbn)}` : ''), b.id);
+  }
+  if (mode === 'issue') {
+    const b = issueBase(r);
+    return card(`#/issue/${r.id}`, b.data.cover, b.title, esc([r.name, fmtDate(r.cover_date)].filter(Boolean).join(' · ')), b.id);
+  }
+  if (mode === 'volume') {
+    return card(`#/volume/${r.id}`, cvImg(r.image, 'small'), r.name,
+      esc([r.start_year, r.publisher?.name, r.count_of_issues != null ? `${r.count_of_issues} números` : ''].filter(Boolean).join(' · ')));
+  }
+  if (mode === 'person') return card(`#/person/${r.id}`, cvImg(r.image, 'small'), r.name, esc(r.deck || ''));
+  return card(`#/arc/${r.id}`, cvImg(r.image, 'small'), r.name, esc([r.publisher?.name, r.deck].filter(Boolean).join(' · ')));
+}
+
+function card(href, cover, title, subHtml, chipId) {
+  return `<div class="card"><a href="${href}" class="cover"${coverStyle(cover)}></a>
+    <div class="body"><a class="title" href="${href}">${esc(title)}</a>
+    <div class="muted small">${subHtml || ''}</div>${chipId ? chips(chipId) : ''}</div></div>`;
+}
+
+// ---------- barcode scanner ----------
+let scanStream = null;
+async function startScan() {
+  const box = document.getElementById('scanner');
+  const video = box.querySelector('video');
+  try {
+    const det = new BarcodeDetector({ formats: ['ean_13'] });
+    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    video.srcObject = scanStream; await video.play();
+    box.classList.add('show');
+    const loop = async () => {
+      if (!scanStream) return;
+      try {
+        const codes = await det.detect(video);
+        const c = codes.find((x) => /^97[89]\d{10}$/.test(x.rawValue));
+        if (c) { stopScan(); navigator.vibrate?.(80); location.hash = `#/book/${enc('isbn:' + c.rawValue)}`; return; }
+      } catch {}
+      requestAnimationFrame(loop);
+    };
+    loop();
+  } catch (e) { stopScan(); toast('No se pudo abrir la cámara'); }
+}
+function stopScan() {
+  scanStream?.getTracks().forEach((t) => t.stop());
+  scanStream = null;
+  document.getElementById('scanner').classList.remove('show');
+}
+
+// ---------- views: book (tomo) ----------
+async function viewBook(id) {
+  let base = itemOf(id);
+  if (!base && id.startsWith('isbn:')) {
+    const d = await api(`/isbn/${enc(id.slice(5))}`);
+    if (!d.found) {
+      $main.innerHTML = `<h2>ISBN ${esc(id.slice(5))}</h2><div class="empty">No aparece en Google Books ni en Open Library.<br><br>
+        <button class="btn primary" data-act="manual" data-isbn="${esc(id.slice(5))}">Añadir a mano</button></div>`;
+      return;
+    }
+    base = bookBase(d.book);
+    if (base.id !== id) { seen.set(id, { ...base, id }); base = seen.get(id); }
+  }
+  if (!base) { location.hash = '#/search'; return; }
+  const it = coll.get(id) || base;
+  const d = it.data;
+  const contains = d.contains || [];
+  $main.innerHTML = `
+    <div class="detail">
+      <div class="cover"${coverStyle(d.cover)}></div>
+      <div>
+        <h2>${esc(it.title)}</h2>
+        ${chips(id, true)}
+        <dl class="info">
+          ${d.authors?.length ? `<dt>Autores</dt><dd>${esc(d.authors.join(', '))}</dd>` : ''}
+          ${d.publisher ? `<dt>Editorial</dt><dd>${esc(d.publisher)}</dd>` : ''}
+          ${d.date ? `<dt>Publicado</dt><dd>${esc(fmtDate(d.date))}</dd>` : ''}
+          ${d.isbn ? `<dt>ISBN</dt><dd>${esc(d.isbn)}</dd>` : ''}
+          ${d.pages ? `<dt>Páginas</dt><dd>${esc(d.pages)}</dd>` : ''}
+          ${d.language ? `<dt>Idioma</dt><dd>${esc(d.language)}</dd>` : ''}
+        </dl>
+        <button class="btn small" data-act="edit-book" data-id="${esc(id)}">Editar datos</button>
+      </div>
+    </div>
+    ${d.description ? `<details><summary>Sinopsis</summary><p class="desc">${esc(htmlToText(d.description))}</p></details>` : ''}
+    <h3>Contiene ${contains.length ? `<span class="muted small">(${contains.length} números)</span>` : ''}</h3>
+    ${contains.length ? `<div class="list">${contains.map((c) => `
+      <div class="issue-row"><a href="#/issue/${c.cvId}" class="grow" style="text-decoration:none">
+        <b>${esc(c.volume?.name || '')} ${esc(issueNum(c.number))}</b>
+        <span class="muted small">${esc([c.name, fmtDate(c.date)].filter(Boolean).join(' · '))}</span></a>
+        <button class="btn small" data-act="unlink" data-id="${esc(id)}" data-cv="${c.cvId}" title="Quitar">✕</button></div>`).join('')}</div>`
+      : '<p class="muted small">Aún no has indicado qué números originales recopila este tomo.</p>'}
+    <div id="linker"><button class="btn" data-act="link-open" data-id="${esc(id)}">+ Vincular números originales</button></div>`;
+}
+
+function bookForm(it) {
+  const d = it?.data || {};
+  $main.innerHTML = `<h2>${it ? 'Editar tomo' : 'Añadir tomo a mano'}</h2>
+    <form id="bform" class="panel list">
+      <label>Título<br><input type="text" name="title" required style="width:100%" value="${esc(it?.title || '')}"></label>
+      <label>ISBN<br><input type="text" name="isbn" style="width:100%" value="${esc(d.isbn || '')}" inputmode="numeric" ${it?.id?.startsWith('isbn:') ? 'readonly' : ''}></label>
+      <label>Autores (separados por comas)<br><input type="text" name="authors" style="width:100%" value="${esc((d.authors || []).join(', '))}"></label>
+      <label>Editorial<br><input type="text" name="publisher" style="width:100%" value="${esc(d.publisher || '')}"></label>
+      <label>Fecha (AAAA o AAAA-MM-DD)<br><input type="text" name="date" style="width:100%" value="${esc(d.date || '')}"></label>
+      <label>Páginas<br><input type="number" name="pages" value="${esc(d.pages || '')}"></label>
+      <label>URL de la portada<br><input type="url" name="cover" style="width:100%" value="${esc(d.cover || '')}"></label>
+      <div class="row"><button class="btn primary">Guardar</button><button type="button" class="btn" onclick="history.back()">Cancelar</button></div>
+    </form>`;
+  document.getElementById('bform').onsubmit = async (e) => {
+    e.preventDefault();
+    const f = Object.fromEntries(new FormData(e.target));
+    const isbn = (f.isbn || '').replace(/[-\s]/g, '').toUpperCase();
+    const id = it?.id || (isbn ? `isbn:${isbn}` : `manual:${crypto.randomUUID()}`);
+    const cur = coll.get(id);
+    const next = {
+      ...(cur || { owned: true, read: false, pending: false }), id, kind: 'book', title: f.title.trim(),
+      data: { ...(it?.data || {}), ...(cur?.data || {}), isbn, authors: f.authors.split(',').map((s) => s.trim()).filter(Boolean),
+        publisher: f.publisher.trim(), date: f.date.trim(), pages: +f.pages || null, cover: f.cover.trim() },
+    };
+    if (isEmpty(next)) next.owned = true;
+    try { await persist(next); seen.set(id, next); location.hash = `#/book/${enc(id)}`; } catch {}
+  };
+}
+
+// Link original issues to a tomo: search volume -> pick issues
+function openLinker(bookId) {
+  const box = document.getElementById('linker');
+  box.innerHTML = `<div class="panel">
+    <form class="row" id="lform"><input type="search" id="lq" class="grow" placeholder="Serie original, p. ej. Daredevil 1964" autocomplete="off">
+    <button class="btn primary">Buscar serie</button></form><div id="lres" style="margin-top:10px"></div></div>`;
+  const q = document.getElementById('lq');
+  const it = itemOf(bookId);
+  q.value = (it?.title || '').replace(/\s*\(.*?\)|\bn[ºo°.]?\s*\d+|\d+$/gi, '').split(/[:\-–]/)[0].trim();
+  q.focus();
+  document.getElementById('lform').onsubmit = async (e) => {
+    e.preventDefault();
+    const res = document.getElementById('lres');
+    res.innerHTML = spinner();
+    try {
+      const d = await api(`/cv/search?type=volume&q=${enc(q.value.trim())}`);
+      res.innerHTML = d.results.length ? `<div class="list">${d.results.map((r) => `
+        <div class="card"><div class="cover"${coverStyle(cvImg(r.image, 'small'))}></div><div class="body">
+        <b>${esc(r.name)}</b><div class="muted small">${esc([r.start_year, r.publisher?.name, r.count_of_issues != null ? r.count_of_issues + ' números' : ''].filter(Boolean).join(' · '))}</div>
+        <button class="btn small" style="margin-top:6px" data-act="link-vol" data-id="${esc(bookId)}" data-vol="${r.id}">Elegir números</button></div></div>`).join('')}</div>`
+        : '<div class="empty">Sin resultados</div>';
+    } catch (err) { res.innerHTML = `<div class="empty">⚠️ ${esc(err.message)}</div>`; }
+  };
+}
+
+async function fetchAllIssues(volId) {
+  let all = [], offset = 0, total = 1;
+  while (offset < total && offset < 1000) {
+    const d = await api(`/cv/issues?volume=${volId}&offset=${offset}`);
+    all = all.concat(d.results); total = d.total; offset += 100;
+  }
+  return all;
+}
+
+async function linkVolume(bookId, volId) {
+  const res = document.getElementById('lres');
+  res.innerHTML = spinner();
+  try {
+    const issues = await fetchAllIssues(volId);
+    const have = new Set((itemOf(bookId).data.contains || []).map((c) => c.cvId));
+    res.innerHTML = `<div class="row small" style="margin-bottom:8px">Del <input type="number" id="rfrom" min="0"> al <input type="number" id="rto" min="0">
+      <button class="btn small" id="rsel">Marcar rango</button></div>
+      <div id="ilist">${issues.map((r) => `<div class="issue-row"><label><input type="checkbox" value="${r.id}" data-num="${esc(r.issue_number)}" ${have.has(r.id) ? 'checked disabled' : ''}>
+        <span class="cover"${coverStyle(cvImg(r.image, 'thumb'))} style="width:32px"></span>
+        <span class="grow"><b>${esc(issueNum(r.issue_number))}</b> <span class="muted small">${esc([r.name, fmtDate(r.cover_date)].filter(Boolean).join(' · '))}</span></span></label></div>`).join('')}</div>
+      <div class="row" style="margin-top:10px"><button class="btn primary" id="ladd">Añadir seleccionados</button></div>`;
+    document.getElementById('rsel').onclick = () => {
+      const a = parseFloat(document.getElementById('rfrom').value), b = parseFloat(document.getElementById('rto').value);
+      res.querySelectorAll('#ilist input:not(:disabled)').forEach((cb) => {
+        const n = parseFloat(cb.dataset.num); if (n >= a && n <= b) cb.checked = true;
+      });
+    };
+    document.getElementById('ladd').onclick = async () => {
+      const ids = new Set([...res.querySelectorAll('#ilist input:checked:not(:disabled)')].map((cb) => +cb.value));
+      if (!ids.size) { toast('No has marcado ningún número'); return; }
+      const picked = issues.filter((r) => ids.has(r.id)).map((r) => ({
+        cvId: r.id, volume: { id: r.volume?.id, name: r.volume?.name }, number: r.issue_number, name: r.name || '', date: r.cover_date || '',
+      }));
+      const base = itemOf(bookId);
+      const cur = coll.get(bookId);
+      const it = cur ? { ...cur } : { ...base, owned: true, read: false, pending: false };
+      it.data = { ...base.data, ...(cur?.data || {}) };
+      it.data.contains = (it.data.contains || []).concat(picked);
+      try { await persist(it); toast(`${picked.length} números vinculados`); viewBook(bookId); } catch {}
+    };
+  } catch (err) { res.innerHTML = `<div class="empty">⚠️ ${esc(err.message)}</div>`; }
+}
+
+async function unlink(bookId, cvId) {
+  const cur = coll.get(bookId); if (!cur) return;
+  const it = { ...cur, data: { ...cur.data, contains: (cur.data.contains || []).filter((c) => c.cvId !== cvId) } };
+  try { await persist(it); viewBook(bookId); } catch {}
+}
+
+// ---------- views: Comic Vine ----------
+function issueRow(r) {
+  const b = issueBase(r);
+  const tomos = tomosWith(r.id);
+  return `<div class="issue-row"><a href="#/issue/${r.id}" class="cover"${coverStyle(b.data.cover)}></a>
+    <div class="grow"><a href="#/issue/${r.id}" style="text-decoration:none"><b>${esc(r.volume?.name && r.volume.name !== ui.ctxVolume ? r.volume.name + ' ' : '')}${esc(issueNum(r.issue_number))}</b>
+    <span class="muted small">${esc([r.name, fmtDate(r.cover_date)].filter(Boolean).join(' · '))}</span></a><br>
+    ${tomos.map((t) => `<a class="badge tomo" href="#/book/${enc(t.id)}" title="${esc(t.title)}">📚 ${esc(t.title.slice(0, 28))}</a>`).join('')}
+    ${chips(b.id)}</div></div>`;
+}
+
+function issueListBlock(issues) {
+  const wrap = document.createElement('div');
+  const filters = [['all', 'Todos'], ['missing', 'Me faltan'], ['unread', 'Sin leer']];
+  let f = 'all';
+  const stat = () => {
+    const n = issues.length;
+    const owned = issues.filter((r) => flagsOf(`cv-issue:${r.id}`).owned || ownedViaTomo(r.id)).length;
+    const read = issues.filter((r) => flagsOf(`cv-issue:${r.id}`).read).length;
+    return `<div class="stats"><div class="stat"><b>${owned}/${n}</b><span>Los tengo</span></div>
+      <div class="stat"><b>${read}/${n}</b><span>Leídos</span></div></div>
+      <div class="progress"><i style="width:${n ? (owned / n) * 100 : 0}%;background:var(--owned)"></i></div>`;
+  };
+  const render = () => {
+    const shown = issues.filter((r) => {
+      const fl = flagsOf(`cv-issue:${r.id}`);
+      if (f === 'missing') return !fl.owned && !ownedViaTomo(r.id);
+      if (f === 'unread') return !fl.read;
+      return true;
+    });
+    wrap.innerHTML = `<div data-refresh-stats>${stat()}</div>
+      <div class="seg">${filters.map(([k, l]) => `<button data-f="${k}" class="${f === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <div>${shown.map(issueRow).join('') || '<div class="empty">Nada por aquí 🎉</div>'}</div>`;
+    wrap.querySelector('[data-refresh-stats]').addEventListener('refresh', (e) => { e.currentTarget.innerHTML = stat(); });
+  };
+  wrap.addEventListener('click', (e) => { const b = e.target.closest('[data-f]'); if (b) { f = b.dataset.f; render(); } });
+  render();
+  return wrap;
+}
+
+function header(img, title, sub, desc, url) {
+  return `<div class="detail"><div class="cover"${coverStyle(img)}></div><div><h2>${esc(title)}</h2>
+    <div class="muted small">${sub}</div>
+    ${url ? `<p class="small"><a href="${esc(url)}" target="_blank" rel="noopener">Ver en Comic Vine ↗</a></p>` : ''}</div></div>
+    ${desc ? `<details><summary>Descripción</summary><p class="desc">${esc(htmlToText(desc).slice(0, 4000))}</p></details>` : ''}`;
+}
+
+async function viewVolume(id) {
+  const [{ results: v }, issues] = await Promise.all([api(`/cv/volume/${id}`), fetchAllIssues(id)]);
+  ui.ctxVolume = v.name;
+  const people = (v.people || []).slice(0, 12);
+  $main.innerHTML = header(cvImg(v.image), v.name,
+    esc([v.start_year, v.publisher?.name, `${v.count_of_issues} números`].filter(Boolean).join(' · ')), v.description || v.deck, v.site_detail_url)
+    + (people.length ? `<p class="small people">${people.map((p) => `<a href="#/person/${p.id}">${esc(p.name)}</a>`).join(', ')}</p>` : '')
+    + '<h3>Números</h3>';
+  $main.appendChild(issueListBlock(issues));
+}
+
+async function viewArc(id) {
+  const { results: a } = await api(`/cv/story_arc/${id}`);
+  ui.ctxVolume = null;
+  const ids = (a.issues || []).map((i) => i.id);
+  let issues = [];
+  for (let i = 0; i < ids.length; i += 100) issues = issues.concat((await api(`/cv/issues-by-id?ids=${ids.slice(i, i + 100).join('|')}`)).results);
+  const order = new Map(ids.map((x, i) => [x, i]));
+  issues.sort((x, y) => (x.cover_date || '').localeCompare(y.cover_date || '') || order.get(x.id) - order.get(y.id));
+  $main.innerHTML = header(cvImg(a.image), a.name, esc([a.publisher?.name, `${ids.length} números`].filter(Boolean).join(' · ')), a.description || a.deck, a.site_detail_url)
+    + '<h3>Números de la saga</h3>';
+  $main.appendChild(issueListBlock(issues));
+}
+
+async function viewIssue(id) {
+  const { results: r } = await api(`/cv/issue/${id}`);
+  const b = issueBase(r);
+  const roles = {};
+  (r.person_credits || []).forEach((p) => (p.role || 'otros').split(',').forEach((role) => {
+    (roles[role.trim()] = roles[role.trim()] || []).push(p);
+  }));
+  const ROLE_ES = { writer: 'Guion', penciler: 'Dibujo', artist: 'Arte', inker: 'Tinta', colorist: 'Color', letterer: 'Rotulación',
+    cover: 'Portada', editor: 'Edición', 'penciller': 'Dibujo' };
+  const tomos = tomosWith(r.id);
+  $main.innerHTML = `<div class="detail"><div class="cover"${coverStyle(cvImg(r.image))}></div><div>
+    <h2>${esc(b.title)}</h2>${r.name ? `<div><i>${esc(r.name)}</i></div>` : ''}
+    ${chips(b.id, true)}
+    <dl class="info">
+      <dt>Serie</dt><dd><a href="#/volume/${r.volume?.id}">${esc(r.volume?.name || '')}</a></dd>
+      ${r.cover_date ? `<dt>Portada</dt><dd>${esc(fmtDate(r.cover_date))}</dd>` : ''}
+      ${r.store_date ? `<dt>A la venta</dt><dd>${esc(fmtDate(r.store_date))}</dd>` : ''}
+      ${Object.entries(roles).map(([role, ps]) => `<dt>${esc(ROLE_ES[role] || role)}</dt><dd class="people">${ps.map((p) => `<a href="#/person/${p.id}">${esc(p.name)}</a>`).join(', ')}</dd>`).join('')}
+      ${(r.story_arc_credits || []).length ? `<dt>Saga</dt><dd class="people">${r.story_arc_credits.map((s) => `<a href="#/arc/${s.id}">${esc(s.name)}</a>`).join(', ')}</dd>` : ''}
+    </dl>
+    ${tomos.length ? `<p class="small">En tus tomos: ${tomos.map((t) => `<a class="badge tomo" href="#/book/${enc(t.id)}">📚 ${esc(t.title)}</a>`).join(' ')}</p>` : ''}
+    ${r.site_detail_url ? `<p class="small"><a href="${esc(r.site_detail_url)}" target="_blank" rel="noopener">Ver en Comic Vine ↗</a></p>` : ''}
+    </div></div>
+    ${r.description || r.deck ? `<details><summary>Descripción</summary><p class="desc">${esc(htmlToText(r.description || r.deck).slice(0, 4000))}</p></details>` : ''}`;
+}
+
+async function viewPerson(id) {
+  const { results: p } = await api(`/cv/person/${id}`);
+  const vols = (p.volume_credits || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+  const arcs = p.story_arc_credits || [];
+  const mine = new Map();
+  for (const it of coll.values()) if (it.kind === 'issue' && it.data.volume?.id) mine.set(it.data.volume.id, (mine.get(it.data.volume.id) || 0) + 1);
+  let filter = '';
+  $main.innerHTML = header(cvImg(p.image), p.name, esc(p.deck || ''), p.description, p.site_detail_url)
+    + (arcs.length ? `<h3>Sagas <span class="muted small">(${arcs.length})</span></h3><p class="small people">${arcs.slice(0, 60).map((s) => `<a href="#/arc/${s.id}">${esc(s.name)}</a>`).join(' · ')}</p>` : '')
+    + `<h3>Series en las que ha trabajado <span class="muted small">(${vols.length})</span></h3>
+      <input type="search" id="vf" placeholder="Filtrar series…" style="width:100%;margin-bottom:8px"><div id="vl" class="list"></div>`;
+  const draw = () => {
+    document.getElementById('vl').innerHTML = vols.filter((v) => v.name.toLowerCase().includes(filter)).map((v) =>
+      `<a class="card" href="#/volume/${v.id}" style="text-decoration:none;padding:8px 12px"><span class="grow"><b>${esc(v.name)}</b></span>
+      ${mine.get(v.id) ? `<span class="badge tomo">${mine.get(v.id)} en colección</span>` : ''}</a>`).join('') || '<div class="empty">Nada</div>';
+  };
+  document.getElementById('vf').oninput = (e) => { filter = e.target.value.toLowerCase(); draw(); };
+  draw();
+}
+
+// ---------- views: collection ----------
+function viewCollection() {
+  const all = [...coll.values()];
+  const count = (fn) => all.filter(fn).length;
+  const books = all.filter((i) => i.kind === 'book');
+  const linkedIssues = new Set(books.filter((b) => b.owned).flatMap((b) => (b.data.contains || []).map((c) => c.cvId)));
+  $main.innerHTML = `<h2>Mi colección</h2>
+    <div class="stats">
+      <div class="stat"><b>${count((i) => i.kind === 'book' && i.owned)}</b><span>Tomos</span></div>
+      <div class="stat"><b>${count((i) => i.kind === 'issue' && i.owned) + [...linkedIssues].filter((id) => !coll.get('cv-issue:' + id)?.owned).length}</b><span>Números originales</span></div>
+      <div class="stat"><b>${count((i) => i.read)}</b><span>Leídos</span></div>
+      <div class="stat"><b>${count((i) => i.pending)}</b><span>Pendientes</span></div>
+    </div>
+    <div class="row"><input type="search" id="cf" class="grow" placeholder="Filtrar por título, editorial…" value="${esc(ui.collText)}"></div>
+    <div class="seg" id="cflags">${[['all', 'Todo'], ['owned', 'Tengo'], ['read', 'Leídos'], ['pending', 'Pendientes'], ['unread', 'Tengo sin leer']]
+      .map(([k, l]) => `<button data-v="${k}" class="${ui.collFilter === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <div class="seg" id="ckind">${[['all', 'Todos'], ['book', 'Tomos'], ['issue', 'Números']]
+      .map(([k, l]) => `<button data-v="${k}" class="${ui.collKind === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <div id="cgrid"></div>`;
+  const draw = () => {
+    const t = ui.collText.toLowerCase();
+    const list = all.filter((i) =>
+      (ui.collKind === 'all' || i.kind === ui.collKind) &&
+      (ui.collFilter === 'all' || (ui.collFilter === 'unread' ? i.owned && !i.read : i[ui.collFilter])) &&
+      (!t || [i.title, i.data.publisher, i.data.isbn, (i.data.authors || []).join(' '), i.data.volume?.name].join(' ').toLowerCase().includes(t)));
+    document.getElementById('cgrid').innerHTML = list.length ? `<div class="grid">${list.map((i) => {
+      const href = i.kind === 'book' ? `#/book/${enc(i.id)}` : `#/issue/${i.data.cvId}`;
+      return `<a class="tile" href="${href}"><span class="cover"${coverStyle(i.data.cover)}></span>
+        <span class="t">${esc(i.title)}</span><span class="dots">${FLAGS.filter((k) => i[k]).map((k) => `<i class="dot ${k}" title="${LABEL[k]}"></i>`).join('')}</span></a>`;
+    }).join('')}</div>` : `<div class="empty">${all.length ? 'Nada con estos filtros.' : 'Tu colección está vacía.<br><br><a class="btn primary" href="#/search" style="text-decoration:none">Buscar cómics</a>'}</div>`;
+  };
+  document.getElementById('cf').oninput = (e) => { ui.collText = e.target.value; draw(); };
+  const seg = (elId, key) => { document.getElementById(elId).onclick = (e) => {
+    const b = e.target.closest('[data-v]'); if (!b) return;
+    ui[key] = b.dataset.v; b.parentNode.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); draw();
+  }; };
+  seg('cflags', 'collFilter'); seg('ckind', 'collKind');
+  draw();
+}
+
+// ---------- views: settings ----------
+function viewSettings() {
+  $main.innerHTML = `<h2>Ajustes</h2>
+    <div class="panel">
+      <label>Clave de la app<br><input type="password" id="tok" style="width:100%" value="${esc(token)}" autocomplete="off"></label>
+      <p class="muted small">Solo se pide una vez por dispositivo. Protege tu colección y tu cuota de Comic Vine.</p>
+      <div class="row"><button class="btn primary" id="tsave">Guardar y probar</button><span id="tstat" class="small"></span></div>
+    </div>
+    <div class="panel">
+      <b>Copia de seguridad</b>
+      <p class="muted small">Tu colección vive en tu base de datos de Cloudflare. Aquí puedes descargar una copia.</p>
+      <button class="btn" id="exp" ${token ? '' : 'disabled'}>Descargar colección (JSON)</button>
+    </div>
+    <p class="muted small">Datos: <a href="https://comicvine.gamespot.com/" target="_blank" rel="noopener">Comic Vine</a>,
+      Google Books y <a href="https://openlibrary.org/" target="_blank" rel="noopener">Open Library</a>.</p>`;
+  document.getElementById('tsave').onclick = async () => {
+    const st = document.getElementById('tstat');
+    token = document.getElementById('tok').value.trim();
+    st.textContent = 'Probando…';
+    try {
+      await api('/ping'); store.set('cs_token', token); collLoaded = false; await loadCollection();
+      st.textContent = `✅ Conectado · ${coll.size} elementos en tu colección`;
+      document.getElementById('exp').disabled = false;
+    } catch (e) { st.textContent = `❌ ${e.message}`; }
+  };
+  document.getElementById('exp').onclick = async () => {
+    await loadCollection();
+    const blob = new Blob([JSON.stringify([...coll.values()], null, 2)], { type: 'application/json' });
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: `comicselves-${new Date().toISOString().slice(0, 10)}.json` });
+    a.click(); URL.revokeObjectURL(a.href);
+  };
+}
+
+// ---------- global actions ----------
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('[data-act]');
+  if (!el) return;
+  const { act, id } = el.dataset;
+  if (act === 'flag') { e.preventDefault(); toggleFlag(id, el.dataset.key); }
+  else if (act === 'scan') startScan();
+  else if (act === 'scan-close') stopScan();
+  else if (act === 'manual') bookForm(el.dataset.isbn ? { id: undefined, title: '', data: { isbn: el.dataset.isbn } } : null);
+  else if (act === 'edit-book') bookForm(itemOf(id));
+  else if (act === 'link-open') openLinker(id);
+  else if (act === 'link-vol') linkVolume(id, el.dataset.vol);
+  else if (act === 'unlink') unlink(id, +el.dataset.cv);
+});
+
+router();
+</script>
+</body>
+</html>

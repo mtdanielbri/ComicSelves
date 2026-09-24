@@ -1,0 +1,14 @@
+{
+  "name": "comicselves",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-01",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "comicselves",
+      "database_id": "4cebec50-0dfe-4596-b71a-a52b6c103f23"
+    }
+  ]
+  // Secrets (not in this file): CV_KEY (Comic Vine API key), APP_TOKEN (app password).
+  // Set them with: npx wrangler secret put CV_KEY / APP_TOKEN
+}
