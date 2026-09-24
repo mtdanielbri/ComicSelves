@@ -98,7 +98,9 @@ details summary { cursor: pointer; color: var(--muted); font-size: 14px; }
 #scanner { position: fixed; inset: 0; background: #000; z-index: 40; display: none; flex-direction: column; }
 #scanner.show { display: flex; }
 #scanner video { flex: 1; width: 100%; object-fit: cover; min-height: 0; }
-#scanner .bar { padding: 16px; display: flex; justify-content: space-between; align-items: center; color: #fff; }
+#scanner .bar { padding: 12px 16px; display: flex; gap: 8px; justify-content: space-between; align-items: center; color: #fff; }
+#scanner .bar input { background: #222; color: #fff; border-color: #444; }
+#scanner [data-act=scan-torch][data-on="1"] { background: #f5c518; color: #000; }
 #scanner .frame { position: absolute; left: 10%; right: 10%; top: 40%; height: 18%; border: 3px solid var(--accent); border-radius: 12px; pointer-events: none; }
 .people a { text-decoration: none; border-bottom: 1px dotted var(--muted); }
 /* character groups: fanned stack of up to 3 covers */
@@ -124,7 +126,15 @@ details summary { cursor: pointer; color: var(--muted); font-size: 14px; }
 <div id="scanner">
   <video playsinline muted></video>
   <div class="frame"></div>
-  <div class="bar"><span>Apunta al código de barras del tomo</span><button class="btn" data-act="scan-close">Cerrar</button></div>
+  <div class="bar">
+    <span class="status grow"></span>
+    <button class="btn" data-act="scan-torch" hidden title="Linterna">🔦</button>
+    <button class="btn" data-act="scan-close">Cerrar</button>
+  </div>
+  <form class="bar" id="scanManual" style="padding-top:0">
+    <input type="text" inputmode="numeric" placeholder="…o escribe el ISBN" class="grow" autocomplete="off">
+    <button class="btn primary">Ir</button>
+  </form>
 </div>
 
 <script>
@@ -338,7 +348,7 @@ const MODES = [
   ['books', 'Tomos'], ['volume', 'Series'], ['issue', 'Números'], ['person', 'Autores'], ['story_arc', 'Sagas'],
 ];
 function viewSearch() {
-  const hasScan = 'BarcodeDetector' in window && navigator.mediaDevices;
+  const hasScan = !!navigator.mediaDevices?.getUserMedia;
   $main.innerHTML = `
     <form class="row" id="sform">
       <input type="search" id="q" class="grow" placeholder="${ui.searchMode === 'books' ? 'Título o ISBN…' : 'Buscar en Comic Vine…'}" value="${esc(ui.lastSearch?.q || '')}" autocomplete="off">
@@ -422,31 +432,109 @@ function card(href, cover, title, subHtml, chipId) {
 }
 
 // ---------- barcode scanner ----------
+// Native BarcodeDetector when the browser has it (Chrome Android); otherwise the same API backed by
+// zxing-cpp compiled to WebAssembly (iPhone, desktop...), loaded on first use.
+const BD_PONYFILL = 'https://cdn.jsdelivr.net/npm/barcode-detector@3.2.2/dist/es/ponyfill.js';
+let detectorPromise = null;
+function getDetector() {
+  detectorPromise = detectorPromise || (async () => {
+    if ('BarcodeDetector' in window) {
+      try {
+        if ((await BarcodeDetector.getSupportedFormats()).includes('ean_13')) return new BarcodeDetector({ formats: ['ean_13'] });
+      } catch {}
+    }
+    const { BarcodeDetector: BD } = await import(BD_PONYFILL);
+    return new BD({ formats: ['ean_13'] });
+  })();
+  detectorPromise.catch(() => { detectorPromise = null; });
+  return detectorPromise;
+}
+const ean13Ok = (c) => /^\d{13}$/.test(c) && (10 - ([...c.slice(0, 12)].reduce((s, d, i) => s + +d * (i % 2 ? 3 : 1), 0) % 10)) % 10 === +c[12];
+
 let scanStream = null;
+let scanTimer = null;
 async function startScan() {
   const box = document.getElementById('scanner');
   const video = box.querySelector('video');
+  const status = box.querySelector('.status');
+  const torchBtn = box.querySelector('[data-act=scan-torch]');
+  status.textContent = 'Abriendo cámara…';
+  box.classList.add('show');
   try {
-    const det = new BarcodeDetector({ formats: ['ean_13'] });
-    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-    video.srcObject = scanStream; await video.play();
-    box.classList.add('show');
-    const loop = async () => {
+    const [det, stream] = await Promise.all([
+      getDetector(),
+      // high resolution: EAN bars are thin, the default 640x480 is often too blurry to read
+      navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } } }),
+    ]);
+    scanStream = stream;
+    const track = stream.getVideoTracks()[0];
+    const caps = track.getCapabilities?.() || {};
+    const adv = {};
+    if ((caps.focusMode || []).includes('continuous')) adv.focusMode = 'continuous';
+    // a little zoom lets phones that can't focus up close read from further away
+    if (caps.zoom && caps.zoom.max >= 1.5) adv.zoom = Math.min(2, caps.zoom.max);
+    if (Object.keys(adv).length) await track.applyConstraints({ advanced: [adv] }).catch(() => {});
+    torchBtn.hidden = !caps.torch;
+    torchBtn.dataset.on = '';
+    video.srcObject = stream;
+    await video.play();
+    status.textContent = 'Apunta al código de barras del tomo';
+
+    // read the central band (where the frame is) and, every other try, the whole image
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    let n = 0, last = '', lastAt = 0, warned = '';
+    const tick = async () => {
       if (!scanStream) return;
       try {
-        const codes = await det.detect(video);
-        const c = codes.find((x) => /^97[89]\d{10}$/.test(x.rawValue));
-        if (c) { stopScan(); navigator.vibrate?.(80); location.hash = `#/book/${enc('isbn:' + c.rawValue)}`; return; }
+        const w = video.videoWidth, h = video.videoHeight;
+        if (w && h) {
+          let src = video;
+          if (n++ % 2 === 0) {
+            const cw = Math.round(w * 0.9), ch = Math.round(h * 0.45);
+            canvas.width = cw; canvas.height = ch;
+            ctx.drawImage(video, (w - cw) / 2, (h - ch) / 2, cw, ch, 0, 0, cw, ch);
+            src = canvas;
+          }
+          const codes = await det.detect(src);
+          for (const { rawValue: c } of codes) {
+            if (!ean13Ok(c)) continue;
+            if (/^97[89]/.test(c)) {
+              // same code twice in a row = no misread
+              if (c === last && Date.now() - lastAt < 2000) {
+                stopScan(); navigator.vibrate?.(80);
+                if (ui.searchMode !== 'books') { ui.searchMode = 'books'; store.set('cs_mode', 'books'); }
+                go(`#/book/${enc('isbn:' + c)}`);
+                return;
+              }
+              last = c; lastAt = Date.now();
+              status.textContent = `Leyendo ${c}…`;
+            } else if (warned !== c) {
+              warned = c;
+              status.textContent = /^977/.test(c) ? `${c}: es un código de revista (ISSN), no un ISBN` : `${c}: no es un ISBN. Busca el código que empieza por 978`;
+            }
+          }
+        }
       } catch {}
-      requestAnimationFrame(loop);
+      scanTimer = setTimeout(tick, 120);
     };
-    loop();
-  } catch (e) { stopScan(); toast('No se pudo abrir la cámara'); }
+    tick();
+  } catch (e) {
+    stopScan();
+    toast(e?.name === 'NotAllowedError' ? 'Permite el acceso a la cámara para escanear' : 'No se pudo abrir la cámara o el lector');
+  }
 }
 function stopScan() {
+  clearTimeout(scanTimer);
   scanStream?.getTracks().forEach((t) => t.stop());
   scanStream = null;
   document.getElementById('scanner').classList.remove('show');
+}
+async function toggleTorch(btn) {
+  const track = scanStream?.getVideoTracks()[0];
+  if (!track) return;
+  const on = !btn.dataset.on;
+  try { await track.applyConstraints({ advanced: [{ torch: on }] }); btn.dataset.on = on ? '1' : ''; } catch {}
 }
 
 // ---------- views: book (tomo) ----------
@@ -1027,6 +1115,7 @@ document.addEventListener('click', (e) => {
   if (act === 'flag') { e.preventDefault(); toggleFlag(id, el.dataset.key); }
   else if (act === 'scan') startScan();
   else if (act === 'scan-close') stopScan();
+  else if (act === 'scan-torch') toggleTorch(el);
   else if (act === 'manual') bookForm(el.dataset.isbn ? { id: undefined, title: '', data: { isbn: el.dataset.isbn } } : null);
   else if (act === 'edit-book') bookForm(itemOf(id));
   else if (act === 'link-open') openLinker(id);
@@ -1036,6 +1125,16 @@ document.addEventListener('click', (e) => {
   else if (act === 'link-vol') linkVolume(id, el.dataset.vol);
   else if (act === 'unlink') unlink(id, +el.dataset.cv);
 });
+
+document.getElementById('scanManual').onsubmit = (e) => {
+  e.preventDefault();
+  const input = e.target.querySelector('input');
+  const v = input.value.replace(/[-\s]/g, '').toUpperCase();
+  if (!isIsbn(v)) { toast('Eso no parece un ISBN'); return; }
+  input.value = '';
+  stopScan();
+  go(`#/book/${enc('isbn:' + v)}`);
+};
 
 router();
 </script>
