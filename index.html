@@ -441,6 +441,7 @@ async function viewBook(id) {
     ${backfillCovers(id) || ''}
     <div id="linker" class="row">
       <button class="btn primary" data-act="auto-open" data-id="${esc(id)}">✨ Detectar números automáticamente</button>
+      <button class="btn" data-act="paste-open" data-id="${esc(id)}">📋 Pegar lista</button>
       <button class="btn" data-act="link-open" data-id="${esc(id)}">+ Vincular a mano</button>
     </div>`;
 }
@@ -518,30 +519,68 @@ async function autoVolume(bookId, volId) {
   res.innerHTML = `${spinner()}<p class="muted small" style="text-align:center">Leyendo qué recopila y buscando las series originales…</p>`;
   try {
     const d = await api(`/cv/collects?volume=${volId}`);
-    const have = new Set((itemOf(bookId).data.contains || []).map((c) => c.cvId));
-    const found = d.groups.filter((g) => g.issues.length);
-    const missing = d.groups.filter((g) => !g.issues.length);
-    if (!found.length) {
+    if (!d.groups.some((g) => g.issues.length)) {
       res.innerHTML = `<div class="empty">Comic Vine no dice qué números recopila <b>${esc(d.volume.name)}</b>.
         ${d.snippet ? `<br><br><i class="small">“${esc(d.snippet)}”</i>` : ''}<br><br>
+        <button class="btn" data-act="paste-open" data-id="${esc(bookId)}">Pegar la lista</button>
         <button class="btn" data-act="link-open" data-id="${esc(bookId)}">Vincular a mano</button></div>`;
       return;
     }
-    const all = found.flatMap((g) => g.issues);
-    res.innerHTML = `${d.snippet ? `<p class="small muted">Según Comic Vine: <i>“${esc(d.snippet)}”</i></p>` : ''}
-      ${found.map((g) => `<h3 style="margin:12px 0 4px">${esc(g.volume.name)} <span class="muted small">(${esc(g.volume.start_year || '')}${g.volume.publisher ? ', ' + esc(g.volume.publisher) : ''})</span></h3>
-        ${g.issues.map((r) => `<div class="issue-row"><label><input type="checkbox" value="${r.id}" ${have.has(r.id) ? 'disabled' : 'checked'}>
-          <span class="cover"${coverStyle(cvImg(r.image, 'thumb'))} style="width:32px"></span>
-          <span class="grow"><b>${esc(issueNum(r.issue_number))}</b> <span class="muted small">${esc([r.name, fmtDate(r.cover_date)].filter(Boolean).join(' · '))}${have.has(r.id) ? ' · ya vinculado' : ''}</span></span></label></div>`).join('')}`).join('')}
-      ${missing.length ? `<p class="small muted">No he encontrado en Comic Vine: ${missing.map((g) => esc(`${g.series} ${g.ranges.map(([a, b]) => a === b ? '#' + a : `#${a}-${b}`).join(', ')}`)).join('; ')}. Puedes añadirlos con «Vincular a mano».</p>` : ''}
-      <div class="row" style="margin-top:10px"><button class="btn primary" id="aadd">Añadir seleccionados</button>
-      <button class="btn" data-act="link-open" data-id="${esc(bookId)}">Vincular a mano</button></div>`;
-    document.getElementById('aadd').onclick = async () => {
-      const ids = new Set([...res.querySelectorAll('input:checked:not(:disabled)')].map((cb) => +cb.value));
-      if (!ids.size) { toast('No has marcado ningún número'); return; }
-      try { await addContains(bookId, all.filter((r) => ids.has(r.id)).map(toContains)); } catch {}
-    };
+    renderSuggestions(res, bookId, d.groups, d.snippet ? `Según Comic Vine: <i>“${esc(d.snippet)}”</i>` : '');
   } catch (err) { res.innerHTML = `<div class="empty">⚠️ ${esc(err.message)}</div>`; }
+}
+
+// Paste a "Collects ..." list (from Amazon, the publisher, Wikipedia...) and let the Worker interpret it.
+function openPaste(bookId) {
+  const box = document.getElementById('linker');
+  box.outerHTML = `<div id="linker" class="panel"><b>Pegar la lista de números</b>
+    <p class="muted small">Pega el texto tal cual, p. ej. <i>Collects Green Lantern #1-17, Green Lantern: Rebirth #1-6, Ion #1-12…</i>
+      También entiende «Recopila Batman USA #404-407».</p>
+    <textarea id="ptext" rows="5" style="width:100%;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px;font:inherit;color:inherit"></textarea>
+    <div class="row" style="margin-top:8px"><button class="btn primary" id="pgo">Interpretar</button></div>
+    <div id="ares" style="margin-top:10px"></div></div>`;
+  const ta = document.getElementById('ptext');
+  ta.focus();
+  document.getElementById('pgo').onclick = async () => {
+    const text = ta.value.trim();
+    if (!text) { toast('Pega primero la lista'); return; }
+    const res = document.getElementById('ares');
+    res.innerHTML = `${spinner()}<p class="muted small" style="text-align:center">Buscando cada serie en Comic Vine…</p>`;
+    try {
+      const d = await api('/cv/parse', { method: 'POST', body: JSON.stringify({ text, year: +year(itemOf(bookId)?.data.date) || 0 }) });
+      if (!d.groups.length) { res.innerHTML = `<div class="empty">${esc(d.error || 'No he entendido la lista.')}</div>`; return; }
+      renderSuggestions(res, bookId, d.groups, '');
+    } catch (err) { res.innerHTML = `<div class="empty">⚠️ ${esc(err.message)}</div>`; }
+  };
+}
+
+// Proposed issues grouped by series, pre-checked; each series can be (un)checked at once.
+function renderSuggestions(res, bookId, groups, introHtml) {
+  const have = new Set((itemOf(bookId).data.contains || []).map((c) => c.cvId));
+  const found = groups.filter((g) => g.issues.length);
+  const missing = groups.filter((g) => !g.issues.length);
+  const total = found.reduce((n, g) => n + g.issues.length, 0);
+  const all = found.flatMap((g) => g.issues);
+  const rng = (g) => g.ranges.map(([a, b]) => (a === b ? `#${a}` : `#${a}-${b}`)).join(', ');
+  res.innerHTML = `${introHtml ? `<p class="small muted">${introHtml}</p>` : ''}
+    <p class="small"><b>${total} números</b> en ${found.length} ${found.length === 1 ? 'serie' : 'series'}. Revisa que la etapa de cada serie sea la correcta.</p>
+    ${found.map((g, gi) => `<h3 style="margin:14px 0 4px"><label style="cursor:pointer"><input type="checkbox" data-group="${gi}" checked>
+      ${esc(g.volume.name)} <span class="muted small">(${esc(g.volume.start_year || '')}${g.volume.publisher ? ', ' + esc(g.volume.publisher) : ''}) · ${esc(rng(g))}</span></label></h3>
+      ${g.issues.map((r) => `<div class="issue-row"><label><input type="checkbox" value="${r.id}" data-in="${gi}" ${have.has(r.id) ? 'disabled' : 'checked'}>
+        <span class="cover"${coverStyle(cvImg(r.image, 'thumb'))} style="width:32px"></span>
+        <span class="grow"><b>${esc(issueNum(r.issue_number))}</b> <span class="muted small">${esc([r.name, fmtDate(r.cover_date)].filter(Boolean).join(' · '))}${have.has(r.id) ? ' · ya vinculado' : ''}</span></span></label></div>`).join('')}`).join('')}
+    ${missing.length ? `<p class="small muted">No he encontrado en Comic Vine: ${missing.map((g) => esc(`${g.series} ${rng(g)}`)).join('; ')}. Puedes añadirlos con «Vincular a mano».</p>` : ''}
+    <div class="row" style="margin-top:10px;position:sticky;bottom:0;background:var(--surface);padding:10px 0"><button class="btn primary" id="aadd">Añadir seleccionados</button>
+    <button class="btn" data-act="link-open" data-id="${esc(bookId)}">Vincular a mano</button></div>`;
+  res.addEventListener('change', (e) => {
+    const gi = e.target.dataset.group;
+    if (gi !== undefined) res.querySelectorAll(`input[data-in="${gi}"]:not(:disabled)`).forEach((cb) => { cb.checked = e.target.checked; });
+  });
+  document.getElementById('aadd').onclick = async () => {
+    const ids = new Set([...res.querySelectorAll('input[data-in]:checked:not(:disabled)')].map((cb) => +cb.value));
+    if (!ids.size) { toast('No has marcado ningún número'); return; }
+    try { await addContains(bookId, all.filter((r) => ids.has(r.id)).map(toContains)); } catch {}
+  };
 }
 
 function bookForm(it) {
@@ -843,6 +882,7 @@ document.addEventListener('click', (e) => {
   else if (act === 'edit-book') bookForm(itemOf(id));
   else if (act === 'link-open') openLinker(id);
   else if (act === 'auto-open') openAuto(id);
+  else if (act === 'paste-open') openPaste(id);
   else if (act === 'auto-vol') autoVolume(id, el.dataset.vol);
   else if (act === 'link-vol') linkVolume(id, el.dataset.vol);
   else if (act === 'unlink') unlink(id, +el.dataset.cv);

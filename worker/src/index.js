@@ -19,7 +19,7 @@ const CV_FIELDS = {
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET,PUT,DELETE,OPTIONS',
+  'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
   'Access-Control-Allow-Headers': 'Authorization,Content-Type',
   'Access-Control-Max-Age': '86400',
 };
@@ -74,6 +74,10 @@ async function route([area, a, b], url, req, env) {
       }, 7 * DAY));
     }
     if (a === 'collects') return json(await collects(env, int(q.get('volume'))));
+    if (a === 'parse' && req.method === 'POST') {
+      const body = await req.json().catch(() => ({}));
+      return json(await parsePasted(env, body.text, int(body.year)));
+    }
     if (CV_TYPES[a]) {
       return json(await cv(env, `/${a}/${CV_TYPES[a]}-${int(b)}/`, { field_list: CV_FIELDS[a] }, 7 * DAY));
     }
@@ -229,16 +233,21 @@ const htmlText = (h) => String(h || '')
 
 // Series names are runs of Capitalized Words (with small connectors), right before the numbers.
 const SERIES = String.raw`[A-Z][\w'’.:\/-]*(?:\s+(?:(?:of|the|and|in|vs\.?|de|del|la|el|los)\s+)*[A-Z][\w'’.:\/-]*)*`;
-const PIECE = new RegExp(String.raw`(${SERIES})?\s*(?:\(([^)]*)\)\s*)?(?:Vol(?:ume)?\.?\s*\d+\s*)?(?:#\s*|\b)(\d{1,4}(?:\.\d)?)(?:\s*(?:-|–|to|through)\s*#?\s*(\d{1,4}(?:\.\d)?))?`);
+// groups: 1 series, 2 "(...)" e.g. (2005), 3 year in the name ("Secret Files 2005 #1"), 4 from, 5 to
+const PIECE = new RegExp(String.raw`(${SERIES})?\s*(?:\(([^)]*)\)\s*)?(?:((?:19|20)\d{2})\s+(?=#))?(?:Vol(?:ume)?\.?\s*\d+\s*)?(?:#\s*|\b)(\d{1,4}(?:\.\d)?)(?:\s*(?:-|–|to|through)\s*#?\s*(\d{1,4}(?:\.\d)?))?`);
 const JUNK = /^(?:Collects|Collecting|Collected|Issues?|Includes|Including|Featuring|Plus|Material|Stories|From|Originally|And|The|This|Volume|Vol\.?|Book|Part|Chapter|TPB|HC|Recopila|Contiene|Incluye|Los|Las|El|La|USA|Números?|Nº)$/i;
 
-function parseCollects(text) {
-  const out = [];
-  const re = /(?:collect(?:s|ing|ed)?|recopila(?:n|ndo)?|contiene|incluye)\b([\s\S]{0,600}?)(?:[.!](?:\s|$)|\n|$)/gi;
+// loose: the text IS the list (pasted by the user), no "Collects" keyword needed
+function parseCollects(text, loose = false) {
+  const lists = [];
+  const re = /(?:collect(?:s|ing|ed)?|recopila(?:n|ndo)?|contiene|incluye)\b([\s\S]{0,1500}?)(?:[.!](?:\s|$)|\n|$)/gi;
   let m;
-  while ((m = re.exec(text))) {
-    let series = '', year = '';
-    for (const piece of m[1].split(/,|;|\band\b|&|\bplus\b/i)) {
+  while ((m = re.exec(text))) lists.push(m[1]);
+  if (loose && !lists.length) lists.push(text);
+  const out = [];
+  for (const list of lists) {
+    let series = '', year = '', nameYear = '';
+    for (const piece of list.split(/,|;|\n|\band\b|&|\bplus\b/i)) {
       const p = PIECE.exec(piece);
       if (!p) continue;
       let name = (p[1] || '').trim().replace(/[:.]+$/, '');
@@ -247,16 +256,16 @@ function parseCollects(text) {
       while (words.length && JUNK.test(words[0])) words.shift();
       name = words.join(' ').replace(/\s+(?:USA|US)$/, ''); // Spanish editions: "Batman USA #404"
       const y = ((p[2] || '').match(/\b(19|20)\d{2}\b/) || [])[0] || '';
-      if (name) { series = name; year = y; } else if (y) year = y;
-      const from = parseFloat(p[3]);
-      const to = p[4] ? parseFloat(p[4]) : from;
+      if (name) { series = name; year = y; nameYear = p[3] || ''; } else if (y) year = y;
+      const from = parseFloat(p[4]);
+      const to = p[5] ? parseFloat(p[5]) : from;
       if (!series || isNaN(from) || to < from || to - from > 200) continue;
-      if (from >= 1900 && from <= 2099 && !p[4]) continue; // a lone year, not an issue
-      out.push({ series, year, from, to });
+      if (from >= 1900 && from <= 2099 && !p[5]) continue; // a lone year, not an issue
+      out.push({ series, year, nameYear, from, to });
     }
   }
   const seen = new Set();
-  return out.filter((g) => { const k = `${g.series}|${g.year}|${g.from}|${g.to}`; return !seen.has(k) && seen.add(k); });
+  return out.filter((g) => { const k = `${g.series}|${g.year}|${g.nameYear}|${g.from}|${g.to}`; return !seen.has(k) && seen.add(k); });
 }
 
 function mergeRanges(rs) {
@@ -271,31 +280,103 @@ function mergeRanges(rs) {
 
 const norm = (s) => String(s || '').toLowerCase().replace(/^the\s+/, '').replace(/[^a-z0-9]+/g, ' ').trim();
 
-// Pick the Comic Vine volume a collected edition refers to ("Green Lantern" #21-25 in a 2008 DC book
-// -> Green Lantern (2005), not the 1960 or 2011 runs, nor foreign reprints).
-async function resolveVolume(env, series, year, maxNum, ctxYear, publisher) {
+// Original-language publishers: preferred over foreign reprint series with the same name.
+const US_PUBLISHERS = new Set(['DC Comics', 'Marvel', 'Image', 'Dark Horse Comics', 'IDW Publishing', 'Vertigo', 'BOOM! Studios',
+  'Dynamite Entertainment', 'Valiant', 'WildStorm', 'Top Cow', 'Oni Press', 'Archie Publications', 'Fantagraphics', 'Skybound']);
+
+// Comic Vine volumes that could be "<series>" #1-<maxNum>
+async function candidates(env, e, maxNum, ctxYear, publisher) {
   // "Green Lantern: Sinestro Corps Special" is filed as "Sinestro Corps Special": also try the part after ':'
-  const names = [series, ...series.split(':').slice(1).map((s) => s.trim()).filter(Boolean)];
-  for (const name of names) {
-    const d = await cv(env, '/search/', { query: name, resources: 'volume', limit: '50', field_list: 'id,name,start_year,count_of_issues,publisher' }, 7 * DAY);
-    let c = (d.results || []).filter((v) => norm(v.name) === norm(name));
-    if (!c.length) continue;
+  const names = [...(e.nameYear ? [`${e.series} ${e.nameYear}`] : []), e.series,
+    ...e.series.split(':').slice(1).map((s) => s.trim()).filter(Boolean)];
+  const narrow = (c, name) => {
     const pick = (f) => { const r = c.filter(f); if (r.length) c = r; };
     if (publisher) pick((v) => v.publisher?.name === publisher);
-    if (year) pick((v) => String(v.start_year) === year);
+    else pick((v) => US_PUBLISHERS.has(v.publisher?.name));
+    if (e.year) pick((v) => String(v.start_year) === e.year);
     pick((v) => (v.count_of_issues || 0) >= maxNum);
     if (ctxYear) pick((v) => !v.start_year || +v.start_year <= ctxYear);
-    c.sort((a, b) => (+b.start_year || 0) - (+a.start_year || 0));
-    if (!ctxYear || c.length === 1) return c[0];
-    // most recent run whose issue #maxNum already existed when the collection came out
+    return c.sort((a, b) => (+b.start_year || 0) - (+a.start_year || 0));
+  };
+  let firstResults = null;
+  for (const name of names) {
+    const d = await cv(env, '/search/', { query: name, resources: 'volume', limit: '50', field_list: 'id,name,start_year,count_of_issues,publisher' }, 7 * DAY);
+    firstResults = firstResults || d.results || [];
+    let c = (d.results || []).filter((v) => norm(v.name) === norm(name));
+    // "Secret Files 2005": the year must match, not just the name
+    if (e.nameYear && !name.includes(e.nameYear)) c = c.filter((v) => String(v.start_year) === e.nameYear);
+    if (c.length) return narrow(c, name);
+  }
+  // loose pass: every word of the name present, at most 2 extra words
+  // ("Green Lantern Secret Files 2005" -> "Green Lantern Secret Files and Origins 2005")
+  const want = norm(names[0]).split(' ');
+  const c = (firstResults || []).filter((v) => {
+    const have = norm(v.name).split(' ');
+    return want.every((w) => have.includes(w)) && have.length - want.length <= 2;
+  });
+  return c.length ? narrow(c, names[0]) : [];
+}
+
+// Among several runs with the same name, choose one:
+// 1) the one closest in time to the series that are unambiguous in the same list (anchor year);
+// 2) else the most recent run whose issue #maxNum already existed when the collection came out;
+// 3) else the longest run.
+async function chooseRun(env, c, maxNum, ctxYear, anchor) {
+  if (c.length <= 1) return c[0] || null;
+  if (anchor) {
+    const score = (v) => Math.abs((+v.start_year || 0) - anchor) + (+v.start_year > anchor ? 0.5 : 0);
+    return c.slice().sort((a, b) => score(a) - score(b))[0];
+  }
+  if (ctxYear) {
     for (const v of c.slice(0, 5)) {
       const r = await cv(env, '/issues/', { filter: `volume:${v.id},issue_number:${maxNum}`, field_list: 'id,cover_date' }, 7 * DAY);
       const y = +((r.results || [])[0]?.cover_date || '').slice(0, 4);
       if (y && y <= ctxYear) return v;
     }
-    return c[c.length - 1];
   }
-  return null;
+  return c.slice().sort((a, b) => (b.count_of_issues || 0) - (a.count_of_issues || 0))[0];
+}
+
+async function resolveGroups(env, groups, ctxYear, publisher) {
+  const bySeries = new Map();
+  for (const g of groups) {
+    const k = `${norm(g.series)}|${g.year}|${g.nameYear || ''}`;
+    const e = bySeries.get(k) || { series: g.series, year: g.year, nameYear: g.nameYear || '', ranges: [] };
+    e.ranges.push([g.from, g.to]);
+    bySeries.set(k, e);
+  }
+  // "Green Lantern: Sinestro Corps Special" and "Sinestro Corps Special" are the same book
+  const keys = [...bySeries.keys()];
+  for (const k of keys) {
+    const [n] = k.split('|');
+    if (keys.some((o) => o !== k && bySeries.has(o) && n.endsWith(' ' + o.split('|')[0]))) bySeries.delete(k);
+  }
+  const entries = [...bySeries.values()];
+  for (const e of entries) {
+    e.ranges = mergeRanges(e.ranges);
+    e.maxNum = Math.max(...e.ranges.map((r) => r[1]));
+    e.cands = await candidates(env, e, e.maxNum, ctxYear, publisher).catch(() => []);
+  }
+  const years = entries.filter((e) => e.cands.length === 1 && e.cands[0].start_year).map((e) => +e.cands[0].start_year).sort((a, b) => a - b);
+  const anchor = years.length ? years[Math.floor(years.length / 2)] : 0;
+
+  const result = [];
+  const volIds = new Set();
+  for (const e of entries) {
+    const found = await chooseRun(env, e.cands, e.maxNum, ctxYear, anchor).catch(() => null);
+    if (found && volIds.has(found.id)) continue;
+    if (found) volIds.add(found.id);
+    const issues = found ? (await volumeIssues(env, found.id)).filter((i) => {
+      const n = parseFloat(i.issue_number);
+      // 23.1-23.4 style specials only when explicitly listed
+      return e.ranges.some(([a, b]) => n >= a && n <= b && (Number.isInteger(n) || n === a || n === b));
+    }) : [];
+    result.push({
+      series: e.series, ranges: e.ranges, issues,
+      volume: found ? { id: found.id, name: found.name, start_year: found.start_year, publisher: found.publisher?.name || '' } : null,
+    });
+  }
+  return result;
 }
 
 async function volumeIssues(env, volId) {
@@ -318,38 +399,15 @@ async function collects(env, volId) {
   const groups = parseCollects(text);
   const ctxYear = +v.start_year || +((iss.results || [])[0]?.cover_date || '').slice(0, 4) || 0;
   const snippet = (text.match(/[^\n]{0,60}(?:collect|recopila|contiene|incluye)[^\n]{0,260}/i) || [''])[0].trim();
-
-  // resolve each series once, then pick its numbers
-  const bySeries = new Map();
-  for (const g of groups) {
-    const k = `${norm(g.series)}|${g.year}`;
-    const e = bySeries.get(k) || { series: g.series, year: g.year, ranges: [] };
-    e.ranges.push([g.from, g.to]);
-    bySeries.set(k, e);
-  }
-  // "Green Lantern: Sinestro Corps Special" and "Sinestro Corps Special" are the same book
-  const keys = [...bySeries.keys()];
-  for (const k of keys) {
-    const [n] = k.split('|');
-    if (keys.some((o) => o !== k && bySeries.has(o) && n.endsWith(' ' + o.split('|')[0]))) bySeries.delete(k);
-  }
-  const result = [];
-  const volIds = new Set();
-  for (const e of bySeries.values()) {
-    const ranges = mergeRanges(e.ranges);
-    const maxNum = Math.max(...ranges.map((r) => r[1]));
-    const found = await resolveVolume(env, e.series, e.year, maxNum, ctxYear, v.publisher?.name).catch(() => null);
-    if (found && volIds.has(found.id)) continue;
-    if (found) volIds.add(found.id);
-    const issues = found ? (await volumeIssues(env, found.id)).filter((i) => {
-      const n = parseFloat(i.issue_number);
-      // 23.1-23.4 style specials only when explicitly listed
-      return ranges.some(([a, b]) => n >= a && n <= b && (Number.isInteger(n) || n === a || n === b));
-    }) : [];
-    result.push({
-      series: e.series, ranges, issues,
-      volume: found ? { id: found.id, name: found.name, start_year: found.start_year, publisher: found.publisher?.name || '' } : null,
-    });
-  }
+  // a Spanish edition (ECC...) reprints US books: only trust the publisher when it's an original one
+  const pub = US_PUBLISHERS.has(v.publisher?.name) ? v.publisher.name : null;
+  const result = await resolveGroups(env, groups, ctxYear, pub);
   return { volume: { id: v.id, name: v.name, start_year: v.start_year }, snippet, groups: result };
+}
+
+// Text pasted by the user, e.g. "Collects Green Lantern #1-17, Ion #1-12 and ..."
+async function parsePasted(env, text, ctxYear) {
+  const groups = parseCollects(String(text || '').slice(0, 5000), true);
+  if (!groups.length) return { groups: [], error: 'No he encontrado ninguna serie con números (p. ej. "Batman #404-407").' };
+  return { groups: await resolveGroups(env, groups, ctxYear, null) };
 }
