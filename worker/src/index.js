@@ -149,14 +149,31 @@ async function cached(env, key, ttl, load) {
   return data;
 }
 
+// Comic Vine blocks bursts ("velocity detection", HTTP 420): space live calls out and retry once.
+const CV_GAP_MS = 1100;
+let cvNext = 0;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function cvThrottle() {
+  const wait = cvNext - Date.now();
+  cvNext = Math.max(Date.now(), cvNext) + CV_GAP_MS;
+  if (wait > 0) await sleep(wait);
+}
+
 async function cv(env, path, params, ttl) {
   const p = new URLSearchParams(params);
   return cached(env, `cv:${path}?${p}`, ttl, async () => {
     p.set('format', 'json');
     p.set('api_key', clean(env.CV_KEY));
-    const d = await getJson(`${CV}${path}?${p}`);
-    if (d.status_code !== 1) throw new Error(`Comic Vine: ${d.error}`);
-    return { results: d.results, total: d.number_of_total_results, offset: d.offset, limit: d.limit };
+    for (let attempt = 0; ; attempt++) {
+      await cvThrottle();
+      const r = await fetch(`${CV}${path}?${p}`, { headers: { 'User-Agent': UA, Accept: 'application/json' } });
+      if ((r.status === 420 || r.status === 429) && attempt === 0) { await sleep(4000); continue; }
+      if (r.status === 420 || r.status === 429) throw new Error('Comic Vine está limitando las consultas. Espera un par de minutos y vuelve a intentarlo.');
+      if (!r.ok) throw new Error(`Comic Vine respondió ${r.status}`);
+      const d = await r.json();
+      if (d.status_code !== 1) throw new Error(`Comic Vine: ${d.error}`);
+      return { results: d.results, total: d.number_of_total_results, offset: d.offset, limit: d.limit };
+    }
   });
 }
 
@@ -232,7 +249,8 @@ const htmlText = (h) => String(h || '')
   .replace(/[ \t]+/g, ' ');
 
 // Series names are runs of Capitalized Words (with small connectors), right before the numbers.
-const SERIES = String.raw`[A-Z][\w'’.:\/-]*(?:\s+(?:(?:of|the|and|in|vs\.?|de|del|la|el|los)\s+)*[A-Z][\w'’.:\/-]*)*`;
+// A trailing 'YY is part of the name: "R.E.B.E.L.S. '94".
+const SERIES = String.raw`[A-Z][\w'’.:\/-]*(?:\s+(?:(?:of|the|and|in|vs\.?|de|del|la|el|los)\s+)*(?:[A-Z][\w'’.:\/-]*|['’]\d{2}\b))*`;
 // groups: 1 series, 2 "(...)" e.g. (2005), 3 year in the name ("Secret Files 2005 #1"), 4 from, 5 to
 const PIECE = new RegExp(String.raw`(${SERIES})?\s*(?:\(([^)]*)\)\s*)?(?:((?:19|20)\d{2})\s+(?=#))?(?:Vol(?:ume)?\.?\s*\d+\s*)?(?:#\s*|\b)(\d{1,4}(?:\.\d)?)(?:\s*(?:-|–|to|through)\s*#?\s*(\d{1,4}(?:\.\d)?))?`);
 const JUNK = /^(?:Collects|Collecting|Collected|Issues?|Includes|Including|Featuring|Plus|Material|Stories|From|Originally|And|The|This|Volume|Vol\.?|Book|Part|Chapter|TPB|HC|Recopila|Contiene|Incluye|Los|Las|El|La|USA|Números?|Nº)$/i;
@@ -240,7 +258,8 @@ const JUNK = /^(?:Collects|Collecting|Collected|Issues?|Includes|Including|Featu
 // loose: the text IS the list (pasted by the user), no "Collects" keyword needed
 function parseCollects(text, loose = false) {
   const lists = [];
-  const re = /(?:collect(?:s|ing|ed)?|recopila(?:n|ndo)?|contiene|incluye)\b([\s\S]{0,1500}?)(?:[.!](?:\s|$)|\n|$)/gi;
+  // the list ends at a full stop, but not the one of an abbreviation like "R.E.B.E.L.S."
+  const re = /(?:collect(?:s|ing|ed)?|recopila(?:n|ndo)?|contiene|incluye)\b([\s\S]{0,1500}?)(?:(?<![A-Z])[.!](?:\s|$)|\n|$)/gi;
   let m;
   while ((m = re.exec(text))) lists.push(m[1]);
   if (loose && !lists.length) lists.push(text);
@@ -255,7 +274,13 @@ function parseCollects(text, loose = false) {
       const words = name.split(/\s+/).filter(Boolean);
       while (words.length && JUNK.test(words[0])) words.shift();
       name = words.join(' ').replace(/\s+(?:USA|US)$/, ''); // Spanish editions: "Batman USA #404"
-      const y = ((p[2] || '').match(/\b(19|20)\d{2}\b/) || [])[0] || '';
+      let y = ((p[2] || '').match(/\b(19|20)\d{2}\b/) || [])[0] || '';
+      // "R.E.B.E.L.S. '94" -> series "R.E.B.E.L.S.", year 1994
+      const yy = name.match(/\s+['’](\d{2})$/);
+      if (yy) { name = name.slice(0, yy.index); y = y || `${+yy[1] > 30 ? 19 : 20}${yy[1]}`; }
+      // numbers without a name ("#124-125") belong to the previous series, but only if the piece starts with them;
+      // otherwise the name wasn't understood and guessing would add wrong issues
+      if (!name && !/^\s*(?:\([^)]*\)\s*)?#?\s*\d/.test(piece)) continue;
       if (name) { series = name; year = y; nameYear = p[3] || ''; } else if (y) year = y;
       const from = parseFloat(p[4]);
       const to = p[5] ? parseFloat(p[5]) : from;
@@ -355,7 +380,7 @@ async function resolveGroups(env, groups, ctxYear, publisher) {
   for (const e of entries) {
     e.ranges = mergeRanges(e.ranges);
     e.maxNum = Math.max(...e.ranges.map((r) => r[1]));
-    e.cands = await candidates(env, e, e.maxNum, ctxYear, publisher).catch(() => []);
+    e.cands = await candidates(env, e, e.maxNum, ctxYear, publisher); // errors (rate limit) must reach the user
   }
   const years = entries.filter((e) => e.cands.length === 1 && e.cands[0].start_year).map((e) => +e.cands[0].start_year).sort((a, b) => a - b);
   const anchor = years.length ? years[Math.floor(years.length / 2)] : 0;
@@ -363,14 +388,10 @@ async function resolveGroups(env, groups, ctxYear, publisher) {
   const result = [];
   const volIds = new Set();
   for (const e of entries) {
-    const found = await chooseRun(env, e.cands, e.maxNum, ctxYear, anchor).catch(() => null);
+    const found = await chooseRun(env, e.cands, e.maxNum, ctxYear, anchor);
     if (found && volIds.has(found.id)) continue;
     if (found) volIds.add(found.id);
-    const issues = found ? (await volumeIssues(env, found.id)).filter((i) => {
-      const n = parseFloat(i.issue_number);
-      // 23.1-23.4 style specials only when explicitly listed
-      return e.ranges.some(([a, b]) => n >= a && n <= b && (Number.isInteger(n) || n === a || n === b));
-    }) : [];
+    const issues = found ? await issuesInRanges(env, found.id, e.ranges) : [];
     result.push({
       series: e.series, ranges: e.ranges, issues,
       volume: found ? { id: found.id, name: found.name, start_year: found.start_year, publisher: found.publisher?.name || '' } : null,
@@ -379,13 +400,22 @@ async function resolveGroups(env, groups, ctxYear, publisher) {
   return result;
 }
 
-async function volumeIssues(env, volId) {
-  let all = [], offset = 0, total = 1;
-  while (offset < total && offset < 1200) {
-    const d = await cv(env, '/issues/', { filter: `volume:${volId}`, sort: 'cover_date:asc', limit: '100', offset: String(offset), field_list: CV_FIELDS.issues }, DAY);
-    all = all.concat(d.results || []); total = d.total || 0; offset += 100;
+// Issues of a volume within number ranges, with covers and dates, in 2 calls:
+// the volume's issue list (id + number, "volume" quota) and one batch of details by id ("issues" quota).
+// Comic Vine allows ~200 calls/hour per resource, so paging through every issue of a long run is too costly.
+async function issuesInRanges(env, volId, ranges) {
+  const v = await cv(env, `/volume/4050-${volId}/`, { field_list: 'issues' }, DAY);
+  const ids = (v.results?.issues || []).filter((i) => {
+    const n = parseFloat(i.issue_number);
+    // 23.1-23.4 style specials only when explicitly listed
+    return ranges.some(([a, b]) => n >= a && n <= b && (Number.isInteger(n) || n === a || n === b));
+  }).map((i) => i.id).sort((a, b) => a - b);
+  let out = [];
+  for (let i = 0; i < ids.length; i += 100) {
+    const d = await cv(env, '/issues/', { filter: `id:${ids.slice(i, i + 100).join('|')}`, limit: '100', field_list: CV_FIELDS.issues }, 7 * DAY);
+    out = out.concat(d.results || []);
   }
-  return all;
+  return out.sort((a, b) => parseFloat(a.issue_number) - parseFloat(b.issue_number));
 }
 
 async function collects(env, volId) {
