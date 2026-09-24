@@ -172,6 +172,9 @@ function gbToBook(it) {
 const OL_FIELDS = 'key,title,subtitle,author_name,cover_i,first_publish_year,editions,editions.key,editions.title,editions.subtitle,'
   + 'editions.publisher,editions.isbn,editions.publish_date,editions.cover_i,editions.language,editions.number_of_pages_median';
 
+// "Daredevil: Born Again" + "Born Again" -> no repeated subtitle
+const joinTitle = (t, sub) => (sub && !String(t || '').toLowerCase().includes(sub.toLowerCase()) ? `${t}: ${sub}` : t || '');
+
 function olToBook(w) {
   const e = (w.editions && w.editions.docs && w.editions.docs[0]) || {};
   const isbns = e.isbn || [];
@@ -179,7 +182,7 @@ function olToBook(w) {
   const cover = e.cover_i || w.cover_i;
   return {
     source: 'openlibrary', olid: e.key || w.key, isbn,
-    title: [e.title || w.title, e.subtitle || w.subtitle].filter(Boolean).join(': '),
+    title: joinTitle(e.title || w.title, e.subtitle || w.subtitle),
     authors: (w.author_name || []).map((n) => n.replace(/\s*\(Duplicate of .*?\)/, '')),
     publisher: (e.publisher || []).filter(Boolean).join(', '),
     date: (e.publish_date || [])[0] || (w.first_publish_year ? String(w.first_publish_year) : ''),

@@ -278,6 +278,8 @@ async function router() {
   window.scrollTo(0, 0);
 }
 window.addEventListener('hashchange', router);
+// navigate, re-rendering even when the hash doesn't change (e.g. edit form -> same book)
+function go(hash) { if (location.hash === hash) router(); else location.hash = hash; }
 
 // ---------- views: search ----------
 const MODES = [
@@ -293,7 +295,7 @@ function viewSearch() {
     </form>
     <div class="seg" id="modes">${MODES.map(([k, l]) => `<button type="button" data-mode="${k}" class="${ui.searchMode === k ? 'on' : ''}">${l}</button>`).join('')}</div>
     <p class="muted small">${ui.searchMode === 'books'
-      ? 'Tomos en español o inglés por título o ISBN (Google Books y Open Library).'
+      ? 'Tomos en español o inglés por título o ISBN (Open Library).'
       : 'Ediciones originales (americanas) desde Comic Vine.'}</p>
     <div id="results"></div>`;
   document.getElementById('modes').onclick = (e) => {
@@ -449,8 +451,9 @@ function bookForm(it) {
       <label>Fecha (AAAA o AAAA-MM-DD)<br><input type="text" name="date" style="width:100%" value="${esc(d.date || '')}"></label>
       <label>Páginas<br><input type="number" name="pages" value="${esc(d.pages || '')}"></label>
       <label>URL de la portada<br><input type="url" name="cover" style="width:100%" value="${esc(d.cover || '')}"></label>
-      <div class="row"><button class="btn primary">Guardar</button><button type="button" class="btn" onclick="history.back()">Cancelar</button></div>
+      <div class="row"><button class="btn primary">Guardar</button><button type="button" class="btn" id="bcancel">Cancelar</button></div>
     </form>`;
+  document.getElementById('bcancel').onclick = () => (it?.id ? go(`#/book/${enc(it.id)}`) : history.back());
   document.getElementById('bform').onsubmit = async (e) => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.target));
@@ -463,7 +466,7 @@ function bookForm(it) {
         publisher: f.publisher.trim(), date: f.date.trim(), pages: +f.pages || null, cover: f.cover.trim() },
     };
     if (isEmpty(next)) next.owned = true;
-    try { await persist(next); seen.set(id, next); location.hash = `#/book/${enc(id)}`; } catch {}
+    try { await persist(next); seen.set(id, next); toast('Guardado'); go(`#/book/${enc(id)}`); } catch {}
   };
 }
 
@@ -721,6 +724,7 @@ function viewSettings() {
       await api('/ping'); store.set('cs_token', token); collLoaded = false; await loadCollection();
       st.textContent = `✅ Conectado · ${coll.size} elementos en tu colección`;
       document.getElementById('exp').disabled = false;
+      setTimeout(() => { location.hash = coll.size ? '#/collection' : '#/search'; }, 900);
     } catch (e) { st.textContent = `❌ ${e.message}`; }
   };
   document.getElementById('exp').onclick = async () => {
