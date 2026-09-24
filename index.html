@@ -101,6 +101,13 @@ details summary { cursor: pointer; color: var(--muted); font-size: 14px; }
 #scanner .bar { padding: 16px; display: flex; justify-content: space-between; align-items: center; color: #fff; }
 #scanner .frame { position: absolute; left: 10%; right: 10%; top: 40%; height: 18%; border: 3px solid var(--accent); border-radius: 12px; pointer-events: none; }
 .people a { text-decoration: none; border-bottom: 1px dotted var(--muted); }
+/* character groups: fanned stack of up to 3 covers */
+.grid.chars { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 18px; }
+.tile.char .stack { position: relative; aspect-ratio: 1 / 1; display: block; margin-bottom: 4px; }
+.tile.char .stack .cover { position: absolute; top: 4%; height: 92%; box-shadow: 0 2px 8px rgba(0,0,0,.35);
+  left: calc(6% + var(--n) * 20%); transform: rotate(calc(var(--n) * 7deg - 5deg)); z-index: calc(3 - var(--n)); }
+.tile.char .stack .cover:only-child { left: 22%; transform: none; }
+.tile.char .t { font-size: 15px; }
 </style>
 </head>
 <body>
@@ -136,7 +143,8 @@ let token = store.get('cs_token') || '';
 const coll = new Map();   // id -> item saved in the collection
 const seen = new Map();   // id -> base item seen in searches (not necessarily saved)
 let collLoaded = false;
-const ui = { searchMode: store.get('cs_mode') || 'books', lastSearch: null, collFilter: 'all', collKind: 'all', collText: '' };
+const ui = { searchMode: store.get('cs_mode') || 'books', lastSearch: null, collFilter: 'all', collKind: 'all', collText: '',
+  collView: store.get('cs_view') || 'grid' };
 
 // ---------- helpers ----------
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -259,12 +267,12 @@ function refreshChips(id) {
 // ---------- router ----------
 const routes = {
   search: viewSearch, collection: viewCollection, settings: viewSettings,
-  book: viewBook, volume: viewVolume, issue: viewIssue, person: viewPerson, arc: viewArc,
+  book: viewBook, volume: viewVolume, issue: viewIssue, person: viewPerson, arc: viewArc, char: viewChar,
 };
 async function router() {
   const [name, ...rest] = (location.hash.replace(/^#\/?/, '') || (token ? 'collection' : 'settings')).split('/');
   const view = routes[name] || viewSearch;
-  document.querySelectorAll('[data-nav]').forEach((a) => a.classList.toggle('on', a.dataset.nav === name));
+  document.querySelectorAll('[data-nav]').forEach((a) => a.classList.toggle('on', a.dataset.nav === (name === 'char' ? 'collection' : name)));
   if (!token && name !== 'settings') { location.hash = '#/settings'; return; }
   const my = (router.seq = (router.seq || 0) + 1);
   $main.innerHTML = spinner();
@@ -425,6 +433,7 @@ async function viewBook(id) {
           ${d.isbn ? `<dt>ISBN</dt><dd>${esc(d.isbn)}</dd>` : ''}
           ${d.pages ? `<dt>Páginas</dt><dd>${esc(d.pages)}</dd>` : ''}
           ${d.language ? `<dt>Idioma</dt><dd>${esc(d.language)}</dd>` : ''}
+          ${coll.has(id) ? `<dt>Personaje</dt><dd><a href="#/char/${enc(charKey(charOf(it)))}">${esc(charOf(it))}</a></dd>` : ''}
         </dl>
         <button class="btn small" data-act="edit-book" data-id="${esc(id)}">Editar datos</button>
       </div>
@@ -594,6 +603,9 @@ function bookForm(it) {
       <label>Fecha (AAAA o AAAA-MM-DD)<br><input type="text" name="date" style="width:100%" value="${esc(d.date || '')}"></label>
       <label>Páginas<br><input type="number" name="pages" value="${esc(d.pages || '')}"></label>
       <label>URL de la portada<br><input type="url" name="cover" style="width:100%" value="${esc(d.cover || '')}"></label>
+      <label>Personaje o grupo<br><input type="text" name="character" style="width:100%" value="${esc(d.character || '')}"
+        placeholder="${esc(it ? charOf({ ...it, data: { ...d, character: '' } }) : 'Automático según el título')}">
+        <span class="muted small">Vacío = automático${it ? ` (ahora: ${esc(charOf({ ...it, data: { ...d, character: '' } }))})` : ''}</span></label>
       <div class="row"><button class="btn primary">Guardar</button><button type="button" class="btn" id="bcancel">Cancelar</button></div>
     </form>`;
   document.getElementById('bcancel').onclick = () => (it?.id ? go(`#/book/${enc(it.id)}`) : history.back());
@@ -606,7 +618,7 @@ function bookForm(it) {
     const next = {
       ...(cur || { owned: true, read: false, pending: false }), id, kind: 'book', title: f.title.trim(),
       data: { ...(it?.data || {}), ...(cur?.data || {}), isbn, authors: f.authors.split(',').map((s) => s.trim()).filter(Boolean),
-        publisher: f.publisher.trim(), date: f.date.trim(), pages: +f.pages || null, cover: f.cover.trim() },
+        publisher: f.publisher.trim(), date: f.date.trim(), pages: +f.pages || null, cover: f.cover.trim(), character: f.character.trim() },
     };
     if (isEmpty(next)) next.owned = true;
     try { await persist(next); seen.set(id, next); toast('Guardado'); go(`#/book/${enc(id)}`); } catch {}
@@ -814,26 +826,113 @@ function viewCollection() {
       .map(([k, l]) => `<button data-v="${k}" class="${ui.collFilter === k ? 'on' : ''}">${l}</button>`).join('')}</div>
     <div class="seg" id="ckind">${[['all', 'Todos'], ['book', 'Tomos'], ['issue', 'Números']]
       .map(([k, l]) => `<button data-v="${k}" class="${ui.collKind === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <div class="seg" id="cview" style="border-top:1px solid var(--line);padding-top:10px">${[['grid', '▦ Todo'], ['chars', '🦸 Por personaje']]
+      .map(([k, l]) => `<button data-v="${k}" class="${ui.collView === k ? 'on' : ''}">${l}</button>`).join('')}</div>
     <div id="cgrid"></div>`;
   const draw = () => {
     const t = ui.collText.toLowerCase();
     const list = all.filter((i) =>
       (ui.collKind === 'all' || i.kind === ui.collKind) &&
       (ui.collFilter === 'all' || (ui.collFilter === 'unread' ? i.owned && !i.read : i[ui.collFilter])) &&
-      (!t || [i.title, i.data.publisher, i.data.isbn, (i.data.authors || []).join(' '), i.data.volume?.name].join(' ').toLowerCase().includes(t)));
-    document.getElementById('cgrid').innerHTML = list.length ? `<div class="grid">${list.map((i) => {
-      const href = i.kind === 'book' ? `#/book/${enc(i.id)}` : `#/issue/${i.data.cvId}`;
-      return `<a class="tile" href="${href}"><span class="cover"${coverStyle(i.data.cover)}></span>
-        <span class="t">${esc(i.title)}</span><span class="dots">${FLAGS.filter((k) => i[k]).map((k) => `<i class="dot ${k}" title="${LABEL[k]}"></i>`).join('')}</span></a>`;
-    }).join('')}</div>` : `<div class="empty">${all.length ? 'Nada con estos filtros.' : 'Tu colección está vacía.<br><br><a class="btn primary" href="#/search" style="text-decoration:none">Buscar cómics</a>'}</div>`;
+      (!t || [i.title, i.data.publisher, i.data.isbn, (i.data.authors || []).join(' '), i.data.volume?.name, charOf(i)].join(' ').toLowerCase().includes(t)));
+    const box = document.getElementById('cgrid');
+    if (!list.length) {
+      box.innerHTML = `<div class="empty">${all.length ? 'Nada con estos filtros.' : 'Tu colección está vacía.<br><br><a class="btn primary" href="#/search" style="text-decoration:none">Buscar cómics</a>'}</div>`;
+    } else if (ui.collView === 'chars') {
+      box.innerHTML = `<div class="grid chars">${charGroups(list).map(charTile).join('')}</div>`;
+    } else {
+      box.innerHTML = `<div class="grid">${list.map(itemTile).join('')}</div>`;
+    }
   };
   document.getElementById('cf').oninput = (e) => { ui.collText = e.target.value; draw(); };
-  const seg = (elId, key) => { document.getElementById(elId).onclick = (e) => {
+  const seg = (elId, key, persistKey) => { document.getElementById(elId).onclick = (e) => {
     const b = e.target.closest('[data-v]'); if (!b) return;
-    ui[key] = b.dataset.v; b.parentNode.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); draw();
+    ui[key] = b.dataset.v; if (persistKey) store.set(persistKey, ui[key]);
+    b.parentNode.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); draw();
   }; };
-  seg('cflags', 'collFilter'); seg('ckind', 'collKind');
+  seg('cflags', 'collFilter'); seg('ckind', 'collKind'); seg('cview', 'collView', 'cs_view');
   draw();
+}
+
+function itemTile(i) {
+  const href = i.kind === 'book' ? `#/book/${enc(i.id)}` : `#/issue/${i.data.cvId}`;
+  return `<a class="tile" href="${href}"><span class="cover"${coverStyle(i.data.cover)}></span>
+    <span class="t">${esc(i.title)}</span><span class="dots">${FLAGS.filter((k) => i[k]).map((k) => `<i class="dot ${k}" title="${LABEL[k]}"></i>`).join('')}</span></a>`;
+}
+
+// ---------- characters ----------
+// Character of an item: the one typed by the user, else guessed from the title / series name:
+// "Green Lantern: Rebirth Compendium" -> "Green Lantern"; "Batman año uno" with Batman issues linked -> "Batman".
+const prefix = (s) => String(s || '').split(/\s*[:–]\s|\s+-\s/)[0].replace(/\s+(?:vol\.?|volume|v\.)\s*\d+.*$/i, '').replace(/\s*[#(].*$/, '').trim();
+function charOf(it) {
+  if (it.data.character) return it.data.character.trim();
+  if (it.kind === 'issue') return prefix(it.data.volume?.name || it.title);
+  if (/[:–]\s/.test(it.title)) return prefix(it.title);
+  // no subtitle: use the most linked original series, if its name starts the title
+  const counts = {};
+  (it.data.contains || []).forEach((c) => { const p = prefix(c.volume?.name); if (p) counts[p] = (counts[p] || 0) + 1; });
+  const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+  if (top && it.title.toLowerCase().startsWith(top[0].toLowerCase())) return top[0];
+  return prefix(it.title);
+}
+const charKey = (s) => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+
+function charGroups(items) {
+  const m = new Map();
+  for (const it of items) {
+    const name = charOf(it) || 'Sin personaje';
+    const k = charKey(name);
+    const g = m.get(k) || { name, key: k, items: [] };
+    g.items.push(it);
+    m.set(k, g);
+  }
+  return [...m.values()].sort((a, b) => b.items.length - a.items.length || a.name.localeCompare(b.name));
+}
+
+function groupCounts(items) {
+  const books = items.filter((i) => i.kind === 'book');
+  const issueIds = new Set([...books.flatMap((b) => (b.data.contains || []).map((c) => c.cvId)),
+    ...items.filter((i) => i.kind === 'issue').map((i) => i.data.cvId)]);
+  return { books: books.length, issues: issueIds.size, read: items.filter((i) => i.read).length };
+}
+
+function charTile(g) {
+  const covers = g.items.map((i) => i.data.cover).filter((u) => u && !isPlaceholder(u)).slice(0, 3);
+  const c = groupCounts(g.items);
+  const sub = [c.books ? `${c.books} ${c.books === 1 ? 'tomo' : 'tomos'}` : '', c.issues ? `${c.issues} números` : ''].filter(Boolean).join(' · ');
+  return `<a class="tile char" href="#/char/${enc(g.key)}">
+    <span class="stack">${(covers.length ? covers : ['']).map((u, n) => `<span class="cover" style="--n:${n};${u ? `background-image:url('${esc(u).replace(/'/g, '%27')}')` : ''}"></span>`).join('')}</span>
+    <span class="t">${esc(g.name)}</span><span class="muted small">${esc(sub)}</span></a>`;
+}
+
+function viewChar(key) {
+  const g = charGroups([...coll.values()]).find((x) => x.key === key);
+  if (!g) { location.hash = '#/collection'; return; }
+  const c = groupCounts(g.items);
+  // original series covered, via the tomos' linked issues and loose issues
+  const series = new Map();
+  const addIssue = (volId, volName, cvId) => {
+    if (!volId) return;
+    const s = series.get(volId) || { id: volId, name: volName, ids: new Set() };
+    s.ids.add(cvId); series.set(volId, s);
+  };
+  g.items.forEach((i) => {
+    if (i.kind === 'issue') addIssue(i.data.volume?.id, i.data.volume?.name, i.data.cvId);
+    (i.data.contains || []).forEach((x) => addIssue(x.volume?.id, x.volume?.name, x.cvId));
+  });
+  const sList = [...series.values()].sort((a, b) => b.ids.size - a.ids.size);
+  $main.innerHTML = `<p class="small"><a href="#/collection">← Mi colección</a></p>
+    <h2>${esc(g.name)}</h2>
+    <div class="stats">
+      <div class="stat"><b>${c.books}</b><span>Tomos</span></div>
+      <div class="stat"><b>${c.issues}</b><span>Números originales</span></div>
+      <div class="stat"><b>${c.read}/${g.items.length}</b><span>Leídos</span></div>
+    </div>
+    <div class="grid">${g.items.map(itemTile).join('')}</div>
+    ${sList.length ? `<h3>Series originales</h3><div class="list">${sList.map((s) => `
+      <a class="card" href="#/volume/${s.id}" style="text-decoration:none;padding:8px 12px;align-items:center">
+      <span class="grow"><b>${esc(s.name)}</b></span><span class="badge tomo">${s.ids.size} ${s.ids.size === 1 ? 'número' : 'números'}</span></a>`).join('')}</div>` : ''}
+    <p class="muted small" style="margin-top:16px">¿Algún libro no debería estar aquí? Ábrelo → <b>Editar datos</b> → campo <b>Personaje</b>.</p>`;
 }
 
 // ---------- views: settings ----------
