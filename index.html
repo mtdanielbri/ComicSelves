@@ -4,9 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>ComicSelves</title>
-<meta name="theme-color" content="#1b1d24">
+<meta name="theme-color" content="#e62429">
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&display=swap" rel="stylesheet">
 <style>
 :root {
   --bg: #f4f2ee; --surface: #ffffff; --surface2: #ebe8e2; --text: #1b1d24; --muted: #6b6f7b;
@@ -119,6 +122,72 @@ details summary { cursor: pointer; color: var(--muted); font-size: 14px; }
   left: calc(6% + var(--n) * 20%); transform: rotate(calc(var(--n) * 7deg - 5deg)); z-index: calc(3 - var(--n)); }
 .tile.char .stack .cover:only-child { left: 22%; transform: none; }
 .tile.char .t { font-size: 15px; }
+
+/* ================= comic look =================
+   Red masthead, halftone paper, panels with thick ink borders and hard shadows.
+   Body text stays in the system font so everything remains easy to read. */
+:root { --accent: #e62429; --ink: #111; --paper-dot: rgba(0,0,0,.06); --display: "Bebas Neue", Impact, "Arial Narrow", sans-serif; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #16161b; --surface: #202128; --surface2: #2b2d36; --accent: #e62429; --ink: #000; --paper-dot: rgba(255,255,255,.045); }
+}
+body { background-color: var(--bg);
+  background-image: radial-gradient(var(--paper-dot) 1.2px, transparent 1.4px); background-size: 7px 7px; }
+header { background: var(--accent); color: #fff; box-shadow: 0 3px 0 var(--ink); padding-bottom: 8px; }
+header h1 { font-family: var(--display); font-weight: 400; font-size: 30px; letter-spacing: .04em; line-height: 1;
+  border: 2px solid #fff; padding: 3px 8px 0; text-transform: uppercase; }
+header h1 span { color: #fff; opacity: .85; }
+nav { display: flex; gap: 2px; flex-wrap: nowrap; }
+nav a { color: #fff; opacity: .9; font-weight: 700; white-space: nowrap; }
+@media (max-width: 420px) {
+  header { padding-left: 12px; padding-right: 8px; }
+  header h1 { font-size: 24px; padding: 2px 6px 0; }
+  nav a { padding: 6px 8px; font-size: 13px; }
+  .stats { gap: 8px; } .stat { min-width: 0; flex: 1; padding: 6px 8px; }
+}
+nav a.on { background: #fff; color: var(--accent); }
+h2, h3 { font-family: var(--display); font-weight: 400; letter-spacing: .03em; text-transform: uppercase; line-height: 1.05; }
+h2 { font-size: 32px; }
+h3 { font-size: 22px; }
+.card, .panel, .stat { border: 2px solid var(--ink); border-radius: 4px; box-shadow: 4px 4px 0 var(--ink); }
+.card { transition: transform .12s, box-shadow .12s; }
+.cover { border-radius: 2px; box-shadow: 0 0 0 2px var(--ink); }
+.tile .cover { box-shadow: 0 0 0 2px var(--ink), 4px 4px 0 var(--ink); transition: transform .15s; }
+.tile:hover .cover { transform: translate(-2px, -2px) rotate(-1.2deg); }
+.stat b { font-family: var(--display); font-weight: 400; font-size: 30px; line-height: 1; }
+.btn { border: 2px solid var(--ink); border-radius: 4px; box-shadow: 3px 3px 0 var(--ink); font-weight: 800; }
+.btn:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--ink); }
+.btn.primary { border-color: var(--ink); }
+input[type=text], input[type=search], input[type=number], input[type=password], input[type=url], select, textarea {
+  border: 2px solid var(--ink) !important; border-radius: 4px !important; }
+.seg button { border: 2px solid var(--ink); font-weight: 800; }
+.seg button.on { background: var(--accent); color: #fff; border-color: var(--ink); }
+.chip { border-width: 2px; text-transform: uppercase; letter-spacing: .03em; font-size: 11px; }
+.chip.on { border-color: var(--ink) !important; box-shadow: 2px 2px 0 var(--ink); }
+.progress { border: 2px solid var(--ink); border-radius: 3px; height: 12px; }
+
+/* collection masthead: a strip of the user's own covers sliding by, under a red wash */
+.hero { position: relative; height: 150px; margin: -16px -16px 18px; overflow: hidden; border-bottom: 3px solid var(--ink); background: #000; }
+.hero .strip { position: absolute; inset: 0; display: flex; gap: 6px; padding: 10px 0; width: max-content;
+  animation: slide 60s linear infinite; }
+.hero .strip .cover { height: 130px; width: 87px; flex: none; box-shadow: 0 0 0 2px #000; transform: rotate(var(--r)); }
+.hero::after { content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, rgba(230,36,41,.92) 0%, rgba(230,36,41,.55) 45%, rgba(0,0,0,.25) 100%); }
+.hero h2 { position: absolute; left: 16px; bottom: 12px; z-index: 1; margin: 0; color: #fff; font-size: 48px;
+  text-shadow: 3px 3px 0 #000; }
+@keyframes slide { to { transform: translateX(-50%); } }
+
+/* opening sting (once per session): covers flicking past, then the logo */
+#intro { position: fixed; inset: 0; z-index: 100; background: #000; display: grid; overflow: hidden;
+  grid-template-columns: repeat(4, 1fr); grid-auto-rows: 1fr; gap: 3px; transition: opacity .35s; cursor: pointer; }
+#intro .cell { background: #222 center/cover no-repeat; filter: saturate(1.2); }
+#intro .logo { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%) scale(.6); opacity: 0;
+  background: var(--accent); color: #fff; font-family: var(--display); font-size: min(18vw, 110px); line-height: 1;
+  padding: .12em .25em 0; border: 4px solid #fff; box-shadow: 0 0 0 6px var(--accent); letter-spacing: .02em;
+  transition: transform .45s cubic-bezier(.2,1.6,.4,1), opacity .2s; white-space: nowrap; }
+#intro.end .logo { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+#intro.end .cell { filter: brightness(.35) saturate(1.2); transition: filter .4s; }
+#intro.out { opacity: 0; pointer-events: none; }
+@media (prefers-reduced-motion: reduce) { .hero .strip { animation: none; } }
 </style>
 </head>
 <body>
@@ -154,7 +223,7 @@ details summary { cursor: pointer; color: var(--muted); font-size: 14px; }
 <script>
 'use strict';
 const API = 'https://comicselves.mtdanielbri.workers.dev/api';
-const APP_VERSION = '2026-09-24 · escáner con foto'; // shown in Ajustes, to check the phone has the latest
+const APP_VERSION = '2026-09-24 · estilo cómic'; // shown in Ajustes, to check the phone has the latest
 const LABEL = { owned: 'Tengo', read: 'Leído', pending: 'Pendiente' };
 const FLAGS = ['owned', 'read', 'pending'];
 const $main = document.getElementById('main');
@@ -400,7 +469,7 @@ async function router() {
   const my = (router.seq = (router.seq || 0) + 1);
   $main.innerHTML = spinner();
   try {
-    if (token && !collLoaded && name !== 'settings') await loadCollection();
+    if (token && !collLoaded && name !== 'settings') { await loadCollection(); playIntro(); }
     if (my !== router.seq) return;
     await view(...rest.map(decodeURIComponent));
   } catch (e) {
@@ -1092,7 +1161,7 @@ function viewCollection() {
   const count = (fn) => all.filter(fn).length;
   const books = all.filter((i) => i.kind === 'book');
   const linkedIssues = new Set(books.filter((b) => b.owned).flatMap((b) => (b.data.contains || []).map((c) => c.cvId)));
-  $main.innerHTML = `<h2>Mi colección</h2>
+  $main.innerHTML = `${heroStrip('Mi colección')}
     <div class="stats">
       <div class="stat"><b>${count((i) => i.kind === 'book' && i.owned)}</b><span>Tomos</span></div>
       <div class="stat"><b>${count((i) => i.kind === 'issue' && i.owned) + [...linkedIssues].filter((id) => !coll.get('cv-issue:' + id)?.owned).length}</b><span>Números originales</span></div>
@@ -1130,6 +1199,52 @@ function viewCollection() {
   }; };
   seg('cflags', 'collFilter'); seg('ckind', 'collKind'); seg('cview', 'collView', 'cs_view');
   draw();
+}
+
+// ---------- comic flourishes ----------
+// real cover URLs of the collection (not guesses that may 404), shuffled
+function collectionCovers() {
+  const urls = [...coll.values()].map((i) => i.data.cover).filter((u) => u && !isPlaceholder(u) && !/default=false/.test(u));
+  return [...new Set(urls)].sort(() => Math.random() - 0.5);
+}
+
+// Collection masthead: the user's covers sliding by under a red wash. Falls back to a plain title.
+function heroStrip(title) {
+  let covers = collectionCovers();
+  if (covers.length < 3) return `<h2>${esc(title)}</h2>`;
+  while (covers.length < 14) covers = covers.concat(covers);
+  covers = covers.slice(0, 20);
+  const one = covers.map((u, n) => `<span class="cover" style="--r:${(n % 5) - 2}deg"${coverStyle(u)}></span>`).join('');
+  return `<div class="hero" aria-hidden="false"><div class="strip">${one}${one}</div><h2>${esc(title)}</h2></div>`;
+}
+
+// Opening sting, once per session: covers flicking past (à la Marvel Studios), then the logo.
+function playIntro() {
+  try { if (sessionStorage.getItem('cs_intro')) return; sessionStorage.setItem('cs_intro', '1'); } catch {}
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const covers = collectionCovers();
+  if (covers.length < 3) return;
+  covers.forEach((u) => { new Image().src = u; }); // warm the cache
+  const cols = 4, rows = Math.ceil(innerHeight / ((innerWidth / cols) * 1.5)) + 1;
+  const el = document.createElement('div');
+  el.id = 'intro';
+  el.innerHTML = `${'<div class="cell"></div>'.repeat(cols * rows)}<div class="logo">COMICSELVES</div>`;
+  document.body.appendChild(el);
+  const cells = [...el.querySelectorAll('.cell')];
+  const pick = () => covers[Math.floor(Math.random() * covers.length)];
+  cells.forEach((c) => { c.style.backgroundImage = `url("${pick()}")`; });
+  const flick = setInterval(() => {
+    for (let k = 0; k < Math.ceil(cells.length / 3); k++) cells[Math.floor(Math.random() * cells.length)].style.backgroundImage = `url("${pick()}")`;
+  }, 70);
+  const timers = [];
+  const close = () => {
+    clearInterval(flick); timers.forEach(clearTimeout);
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 400);
+  };
+  timers.push(setTimeout(() => { clearInterval(flick); el.classList.add('end'); }, 1100));
+  timers.push(setTimeout(close, 2000));
+  el.onclick = close;
 }
 
 function itemTile(i) {
