@@ -185,6 +185,50 @@ async function api(path, opts = {}) {
   return d;
 }
 
+// ---------- Comic Vine /issues lists, straight from the browser ----------
+// Comic Vine often blocks its /issues list for Cloudflare's shared IPs ("Slow down cowboy"), so the app asks
+// Comic Vine directly with JSONP (Comic Vine sends no CORS headers) from the user's own IP.
+const CV_FIELDS_ISSUES = 'id,name,issue_number,cover_date,image,volume';
+let cvKey = null;
+let cvNext = 0;
+const cvMemo = new Map();
+async function cvList(params) {
+  const k = JSON.stringify(params);
+  if (cvMemo.has(k)) return cvMemo.get(k);
+  if (!cvKey) cvKey = (await api('/cv/key')).key;
+  const wait = cvNext - Date.now();               // ~1 call/second, Comic Vine dislikes bursts
+  cvNext = Math.max(Date.now(), cvNext) + 1000;
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  const d = await new Promise((resolve, reject) => {
+    const cb = `cvcb${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+    const s = document.createElement('script');
+    const done = () => { delete window[cb]; s.remove(); clearTimeout(timer); };
+    const timer = setTimeout(() => { done(); reject(new Error('Comic Vine no responde')); }, 20000);
+    window[cb] = (data) => { done(); resolve(data); };
+    s.onerror = () => { done(); reject(new Error('No se pudo conectar con Comic Vine')); };
+    s.src = `https://comicvine.gamespot.com/api/issues/?${new URLSearchParams({ ...params, api_key: cvKey, format: 'jsonp', json_callback: cb })}`;
+    document.head.appendChild(s);
+  });
+  if (d.status_code !== 1) throw new Error(d.status_code === 107 ? 'Comic Vine está limitando las consultas. Espera un par de minutos.' : `Comic Vine: ${d.error}`);
+  const out = { results: d.results, total: d.number_of_total_results };
+  cvMemo.set(k, out);
+  return out;
+}
+async function cvIssuesById(ids) {
+  let out = [];
+  for (let i = 0; i < ids.length; i += 100) {
+    out = out.concat((await cvList({ filter: `id:${ids.slice(i, i + 100).join('|')}`, limit: '100', field_list: CV_FIELDS_ISSUES })).results);
+  }
+  return out;
+}
+// add covers and dates to issues that only have id/number/title (as the Worker returns them)
+async function enrichIssues(issues) {
+  const need = issues.filter((r) => !r.image).map((r) => r.id);
+  if (!need.length) return issues;
+  const full = new Map((await cvIssuesById(need)).map((r) => [r.id, r]));
+  return issues.map((r) => (full.has(r.id) ? { ...r, ...full.get(r.id) } : r));
+}
+
 // ---------- item builders ----------
 function bookBase(b) {
   const id = b.isbn ? `isbn:${b.isbn}` : b.gid ? `gb:${b.gid}` : `manual:${crypto.randomUUID()}`;
@@ -465,8 +509,8 @@ function backfillCovers(bookId) {
     try {
       const covers = new Map();
       for (let i = 0; i < missing.length; i += 100) {
-        const d = await api(`/cv/issues-by-id?ids=${missing.slice(i, i + 100).map((c) => c.cvId).join('|')}`);
-        d.results.forEach((r) => covers.set(r.id, cvImg(r.image, 'small')));
+        const res = await cvIssuesById(missing.slice(i, i + 100).map((c) => c.cvId));
+        res.forEach((r) => covers.set(r.id, cvImg(r.image, 'small')));
       }
       const now = coll.get(bookId);
       const it = { ...now, data: { ...now.data, contains: now.data.contains.map((c) => (c.cover === undefined ? { ...c, cover: covers.get(c.cvId) || '' } : c)) } };
@@ -564,7 +608,11 @@ function openPaste(bookId) {
 }
 
 // Proposed issues grouped by series, pre-checked; each series can be (un)checked at once.
-function renderSuggestions(res, bookId, groups, introHtml) {
+async function renderSuggestions(res, bookId, groups, introHtml) {
+  res.innerHTML = `${spinner()}<p class="muted small" style="text-align:center">Cargando portadas…</p>`;
+  try {
+    for (const g of groups) if (g.issues.length) g.issues = await enrichIssues(g.issues);
+  } catch (err) { toast(`Sin portadas: ${err.message}`); } // still usable without covers
   const have = new Set((itemOf(bookId).data.contains || []).map((c) => c.cvId));
   const found = groups.filter((g) => g.issues.length);
   const missing = groups.filter((g) => !g.issues.length);
@@ -653,7 +701,7 @@ function openLinker(bookId) {
 async function fetchAllIssues(volId) {
   let all = [], offset = 0, total = 1;
   while (offset < total && offset < 1000) {
-    const d = await api(`/cv/issues?volume=${volId}&offset=${offset}`);
+    const d = await cvList({ filter: `volume:${parseInt(volId, 10)}`, sort: 'cover_date:asc', limit: '100', offset: String(offset), field_list: CV_FIELDS_ISSUES });
     all = all.concat(d.results); total = d.total; offset += 100;
   }
   return all;
@@ -754,7 +802,7 @@ async function viewArc(id) {
   ui.ctxVolume = null;
   const ids = (a.issues || []).map((i) => i.id);
   let issues = [];
-  for (let i = 0; i < ids.length; i += 100) issues = issues.concat((await api(`/cv/issues-by-id?ids=${ids.slice(i, i + 100).join('|')}`)).results);
+  issues = await cvIssuesById(ids);
   const order = new Map(ids.map((x, i) => [x, i]));
   issues.sort((x, y) => (x.cover_date || '').localeCompare(y.cover_date || '') || order.get(x.id) - order.get(y.id));
   $main.innerHTML = header(cvImg(a.image), a.name, esc([a.publisher?.name, `${ids.length} números`].filter(Boolean).join(' · ')), a.description || a.deck, a.site_detail_url)

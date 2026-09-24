@@ -74,6 +74,8 @@ async function route([area, a, b], url, req, env) {
       }, 7 * DAY));
     }
     if (a === 'collects') return json(await collects(env, int(q.get('volume'))));
+    // the app calls Comic Vine's /issues list directly from the browser (see NOTE in volIssueList)
+    if (a === 'key') return json({ key: clean(env.CV_KEY) });
     if (a === 'parse' && req.method === 'POST') {
       const body = await req.json().catch(() => ({}));
       return json(await parsePasted(env, body.text, int(body.year)));
@@ -168,7 +170,11 @@ async function cv(env, path, params, ttl) {
       await cvThrottle();
       const r = await fetch(`${CV}${path}?${p}`, { headers: { 'User-Agent': UA, Accept: 'application/json' } });
       if ((r.status === 420 || r.status === 429) && attempt === 0) { await sleep(4000); continue; }
-      if (r.status === 420 || r.status === 429) throw new Error('Comic Vine está limitando las consultas. Espera un par de minutos y vuelve a intentarlo.');
+      if (r.status === 420 || r.status === 429) {
+        const body = (await r.text()).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
+        console.log('Comic Vine', r.status, path, body);
+        throw new Error(`Comic Vine está limitando las consultas (${r.status}${body ? `: ${body}` : ''}). Espera un par de minutos y vuelve a intentarlo.`);
+      }
       if (!r.ok) throw new Error(`Comic Vine respondió ${r.status}`);
       const d = await r.json();
       if (d.status_code !== 1) throw new Error(`Comic Vine: ${d.error}`);
@@ -354,8 +360,10 @@ async function chooseRun(env, c, maxNum, ctxYear, anchor) {
   }
   if (ctxYear) {
     for (const v of c.slice(0, 5)) {
-      const r = await cv(env, '/issues/', { filter: `volume:${v.id},issue_number:${maxNum}`, field_list: 'id,cover_date' }, 7 * DAY);
-      const y = +((r.results || [])[0]?.cover_date || '').slice(0, 4);
+      const it = (await volIssueList(env, v.id)).issues.find((i) => parseFloat(i.issue_number) === maxNum);
+      if (!it) continue;
+      const r = await cv(env, `/issue/4000-${it.id}/`, { field_list: 'id,cover_date' }, 7 * DAY);
+      const y = +(r.results?.cover_date || '').slice(0, 4);
       if (y && y <= ctxYear) return v;
     }
   }
@@ -400,34 +408,37 @@ async function resolveGroups(env, groups, ctxYear, publisher) {
   return result;
 }
 
-// Issues of a volume within number ranges, with covers and dates, in 2 calls:
-// the volume's issue list (id + number, "volume" quota) and one batch of details by id ("issues" quota).
-// Comic Vine allows ~200 calls/hour per resource, so paging through every issue of a long run is too costly.
+// NOTE: the /issues list endpoint is often blocked ("Slow down cowboy", HTTP 420) for Cloudflare's shared
+// IPs even when our own quota is fine. The Worker therefore never uses it: it relies on the volume's issue
+// list (/volume) and single issues (/issue). Covers and dates for lists are fetched by the browser (JSONP).
+async function volIssueList(env, volId) {
+  const v = await cv(env, `/volume/4050-${volId}/`, { field_list: 'id,name,issues' }, DAY);
+  return { id: v.results?.id, name: v.results?.name, issues: v.results?.issues || [] };
+}
+
+// Issues of a volume within number ranges: id, number and title (no cover/date, see NOTE above).
 async function issuesInRanges(env, volId, ranges) {
-  const v = await cv(env, `/volume/4050-${volId}/`, { field_list: 'issues' }, DAY);
-  const ids = (v.results?.issues || []).filter((i) => {
+  const v = await volIssueList(env, volId);
+  return v.issues.filter((i) => {
     const n = parseFloat(i.issue_number);
     // 23.1-23.4 style specials only when explicitly listed
     return ranges.some(([a, b]) => n >= a && n <= b && (Number.isInteger(n) || n === a || n === b));
-  }).map((i) => i.id).sort((a, b) => a - b);
-  let out = [];
-  for (let i = 0; i < ids.length; i += 100) {
-    const d = await cv(env, '/issues/', { filter: `id:${ids.slice(i, i + 100).join('|')}`, limit: '100', field_list: CV_FIELDS.issues }, 7 * DAY);
-    out = out.concat(d.results || []);
-  }
-  return out.sort((a, b) => parseFloat(a.issue_number) - parseFloat(b.issue_number));
+  }).map((i) => ({ id: i.id, name: i.name || '', issue_number: i.issue_number, volume: { id: v.id, name: v.name } }))
+    .sort((a, b) => parseFloat(a.issue_number) - parseFloat(b.issue_number));
 }
 
 async function collects(env, volId) {
   if (!volId) return { error: 'missing volume' };
-  const [vol, iss] = await Promise.all([
-    cv(env, `/volume/4050-${volId}/`, { field_list: 'id,name,start_year,description,deck,publisher' }, 7 * DAY),
-    cv(env, '/issues/', { filter: `volume:${volId}`, limit: '10', field_list: 'id,issue_number,description,deck,cover_date' }, 7 * DAY),
-  ]);
+  const vol = await cv(env, `/volume/4050-${volId}/`, { field_list: 'id,name,start_year,description,deck,publisher,issues' }, 7 * DAY);
   const v = vol.results || {};
-  const text = [v.description, v.deck, ...(iss.results || []).flatMap((i) => [i.description, i.deck])].map(htmlText).filter(Boolean).join('\n');
+  // a collected edition is filed as a volume with 1-3 issues: their descriptions say what they collect
+  const iss = [];
+  for (const i of (v.issues || []).slice(0, 3)) {
+    iss.push((await cv(env, `/issue/4000-${i.id}/`, { field_list: 'id,description,deck,cover_date' }, 7 * DAY)).results || {});
+  }
+  const text = [v.description, v.deck, ...iss.flatMap((i) => [i.description, i.deck])].map(htmlText).filter(Boolean).join('\n');
   const groups = parseCollects(text);
-  const ctxYear = +v.start_year || +((iss.results || [])[0]?.cover_date || '').slice(0, 4) || 0;
+  const ctxYear = +v.start_year || +(iss[0]?.cover_date || '').slice(0, 4) || 0;
   const snippet = (text.match(/[^\n]{0,60}(?:collect|recopila|contiene|incluye)[^\n]{0,260}/i) || [''])[0].trim();
   // a Spanish edition (ECC...) reprints US books: only trust the publisher when it's an original one
   const pub = US_PUBLISHERS.has(v.publisher?.name) ? v.publisher.name : null;
