@@ -87,6 +87,11 @@ async function route([area, a, b], url, req, env) {
 
   // ---- Books (ISBN / Spanish editions) ----
   if (area === 'isbn') return json(await isbnLookup(env, String(a || '').replace(/[^0-9Xx]/g, '')));
+  if (area === 'cover') {
+    const isbn = (q.get('isbn') || '').replace(/[^0-9Xx]/g, '');
+    const title = (q.get('title') || '').slice(0, 200);
+    return json(await cached(env, `cover:${isbn}|${norm(title)}`, 30 * DAY, () => findCover(env, isbn, title)));
+  }
   if (area === 'books' && a === 'search') {
     const text = q.get('q') || '';
     const page = int(q.get('page')) || 1;
@@ -371,7 +376,37 @@ function mergeRanges(rs) {
   return out;
 }
 
-const norm = (s) => String(s || '').toLowerCase().replace(/^the\s+/, '').replace(/[^a-z0-9]+/g, ' ').trim();
+const norm = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+  .replace(/^the\s+/, '').replace(/[^a-z0-9]+/g, ' ').trim();
+
+// ---------- covers for books that have none ----------
+// Only accept a title match when the names really agree: a wrong cover is worse than a placeholder.
+function titleMatch(a, b) {
+  const x = norm(a).split(' ').filter((w) => w.length > 1), y = norm(b).split(' ').filter((w) => w.length > 1);
+  if (!x.length || !y.length) return false;
+  const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+  return short.filter((w) => long.includes(w)).length / short.length >= 0.85 && short.length / long.length >= 0.5;
+}
+
+async function findCover(env, isbn, title) {
+  if (isbn) {
+    const g = await googleFeed(env, `isbn:${isbn}`, 1).catch(() => ({ results: [] }));
+    const hit = g.results.find((b) => b.cover);
+    if (hit) return { url: hit.cover, source: 'Google Books' };
+    const ol = `https://covers.openlibrary.org/b/isbn/${isbn}-M.jpg?default=false`;
+    const r = await fetch(ol, { method: 'HEAD' }).catch(() => null);
+    if (r && r.ok) return { url: ol, source: 'Open Library' };
+  }
+  if (title) {
+    const cvr = await cv(env, '/search/', { query: title, resources: 'volume', limit: '10', field_list: 'id,name,image' }, 7 * DAY).catch(() => ({ results: [] }));
+    const v = (cvr.results || []).find((x) => titleMatch(x.name, title) && x.image && !/6373148-blank|image_not_available/.test(x.image.medium_url || ''));
+    if (v) return { url: v.image.medium_url, source: 'Comic Vine' };
+    const g = await googleFeed(env, title, 1).catch(() => ({ results: [] }));
+    const b = g.results.find((x) => x.cover && titleMatch(x.title, title));
+    if (b) return { url: b.cover, source: 'Google Books' };
+  }
+  return { url: '' };
+}
 
 // Original-language publishers: preferred over foreign reprint series with the same name.
 const US_PUBLISHERS = new Set(['DC Comics', 'Marvel', 'Image', 'Dark Horse Comics', 'IDW Publishing', 'Vertigo', 'BOOM! Studios',

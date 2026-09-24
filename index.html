@@ -104,6 +104,14 @@ details summary { cursor: pointer; color: var(--muted); font-size: 14px; }
 #scanner [data-act=scan-torch][data-on="1"] { background: #f5c518; color: #000; }
 #scanner .frame { position: absolute; left: 10%; right: 10%; top: 40%; height: 18%; border: 3px solid var(--accent); border-radius: 12px; pointer-events: none; }
 .people a { text-decoration: none; border-bottom: 1px dotted var(--muted); }
+/* generated cover when there's no image: the title on a colour of its own */
+.cover { container-type: inline-size; overflow: hidden; }
+.cover.ph { display: flex; align-items: center; justify-content: center; text-decoration: none; padding: 4px;
+  background: linear-gradient(160deg, hsl(var(--h) 60% 42%), hsl(calc(var(--h) + 40) 55% 18%));
+  box-shadow: inset 0 0 0 2px rgba(255,255,255,.15); }
+.cover.ph span { color: #fff; font-weight: 900; text-transform: uppercase; text-align: center; line-height: 1.05;
+  font-size: clamp(7px, 15cqw, 24px); letter-spacing: -.01em; overflow-wrap: anywhere; text-shadow: 0 2px 4px rgba(0,0,0,.4);
+  display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
 /* character groups: fanned stack of up to 3 covers */
 .grid.chars { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 18px; }
 .tile.char .stack { position: relative; aspect-ratio: 1 / 1; display: block; margin-bottom: 4px; }
@@ -181,7 +189,10 @@ const htmlToText = (h) => {
 };
 const cvImg = (img, size = 'medium') => (img && (img[`${size}_url`] || img.small_url || img.thumb_url)) || '';
 const isPlaceholder = (u) => !u || /\/6373148-blank|image_not_available/i.test(u);
-const coverStyle = (u) => (u && !isPlaceholder(u) ? ` style="background-image:url('${esc(u).replace(/'/g, '%27')}')"` : '');
+// Covers are loaded by hydrateCover (below): real image, else a cover found by the Worker, else a
+// generated placeholder with the title. `id` lets a found cover be saved to that book.
+const coverStyle = (u, title = '', id = '') =>
+  `${u && !isPlaceholder(u) ? ` data-cover="${esc(u)}"` : ''}${title ? ` data-title="${esc(title)}"` : ''}${id ? ` data-id="${esc(id)}"` : ''}`;
 const issueNum = (n) => (n == null || n === '' ? '' : `#${n}`);
 const isIsbn = (s) => /^(97[89])?\d{9}[\dXx]$/.test(s.replace(/[-\s]/g, ''));
 
@@ -201,6 +212,57 @@ async function api(path, opts = {}) {
   if (!r.ok) throw new Error(d.error || `Error ${r.status}`);
   return d;
 }
+
+// ---------- covers ----------
+const coverFinds = new Map(); // book id -> Promise<url>
+function findCover(id) {
+  if (!coverFinds.has(id)) {
+    coverFinds.set(id, (async () => {
+      const it = itemOf(id);
+      if (!it || it.kind !== 'book') return '';
+      const d = await api(`/cover?isbn=${enc(it.data.isbn || '')}&title=${enc(it.title || '')}`).catch(() => ({}));
+      if (!d.url) return '';
+      // remember it: in the collection (saved) and for this session
+      const cur = coll.get(id);
+      if (cur && cur.data.cover !== d.url) persist({ ...cur, data: { ...cur.data, cover: d.url } }).catch(() => {});
+      const s = seen.get(id);
+      if (s) s.data.cover = d.url;
+      return d.url;
+    })());
+  }
+  return coverFinds.get(id);
+}
+
+function placeholderCover(el) {
+  const title = el.dataset.title || '';
+  let h = 0;
+  for (const ch of title) h = (h * 31 + ch.codePointAt(0)) % 360;
+  el.classList.add('ph');
+  el.style.setProperty('--h', h);
+  el.innerHTML = `<span>${esc(title.replace(/^(marvel|dc) (gold|must[- ]have|deluxe|omnibus|limited)\.?\s*/i, ''))}</span>`;
+}
+
+function hydrateCover(el) {
+  if (el.dataset.h) return;
+  el.dataset.h = '1';
+  const show = (u) => new Promise((ok, ko) => {
+    const img = new Image();
+    // tiny images are "no cover" placeholders served by some sources
+    img.onload = () => (img.naturalWidth > 20 ? ok(u) : ko());
+    img.onerror = ko;
+    img.src = u;
+  }).then(() => { el.style.backgroundImage = `url("${u.replace(/"/g, '%22')}")`; });
+  const fallback = async () => {
+    const id = el.dataset.id;
+    const found = id && (id.startsWith('isbn:') || id.startsWith('gb:') || id.startsWith('manual:')) ? await findCover(id) : '';
+    if (found && found !== el.dataset.cover) return show(found).catch(() => placeholderCover(el));
+    placeholderCover(el);
+  };
+  if (el.dataset.cover) show(el.dataset.cover).catch(fallback);
+  else fallback();
+}
+new MutationObserver(() => document.querySelectorAll('.cover:not([data-h])').forEach(hydrateCover))
+  .observe(document.body, { childList: true, subtree: true });
 
 // ---------- Comic Vine /issues lists, straight from the browser ----------
 // Comic Vine often blocks its /issues list for Cloudflare's shared IPs ("Slow down cowboy"), so the app asks
@@ -433,7 +495,7 @@ function resultCard(r, mode) {
 }
 
 function card(href, cover, title, subHtml, chipId) {
-  return `<div class="card"><a href="${href}" class="cover"${coverStyle(cover)}></a>
+  return `<div class="card"><a href="${href}" class="cover"${coverStyle(cover, title, chipId)}></a>
     <div class="body"><a class="title" href="${href}">${esc(title)}</a>
     <div class="muted small">${subHtml || ''}</div>${chipId ? chips(chipId) : ''}</div></div>`;
 }
@@ -634,7 +696,7 @@ async function viewBook(id) {
   const contains = d.contains || [];
   $main.innerHTML = `
     <div class="detail">
-      <div class="cover"${coverStyle(d.cover)}></div>
+      <div class="cover"${coverStyle(d.cover, it.title, id)}></div>
       <div>
         <h2>${esc(it.title)}</h2>
         ${chips(id, true)}
@@ -653,7 +715,7 @@ async function viewBook(id) {
     ${d.description ? `<details><summary>Sinopsis</summary><p class="desc">${esc(htmlToText(d.description))}</p></details>` : ''}
     <h3>Contiene ${contains.length ? `<span class="muted small">(${contains.length} números)</span>` : ''}</h3>
     ${contains.length ? `<div>${contains.map((c) => `
-      <div class="issue-row"><a href="#/issue/${c.cvId}" class="cover"${coverStyle(c.cover)}></a>
+      <div class="issue-row"><a href="#/issue/${c.cvId}" class="cover"${coverStyle(c.cover, `${c.volume?.name || ''} ${issueNum(c.number)}`)}></a>
         <a href="#/issue/${c.cvId}" class="grow" style="text-decoration:none">
         <b>${esc(c.volume?.name || '')} ${esc(issueNum(c.number))}</b><br>
         <span class="muted small">${esc([c.name, fmtDate(c.date)].filter(Boolean).join(' · '))}</span></a>
@@ -726,7 +788,7 @@ function openAuto(bookId) {
       // collected editions are filed as 1-3 issue volumes: show those first
       const list = d.results.slice().sort((a, b) => ((a.count_of_issues || 99) <= 3 ? 0 : 1) - ((b.count_of_issues || 99) <= 3 ? 0 : 1));
       res.innerHTML = list.length ? `<div class="list">${list.map((r) => `
-        <div class="card"><div class="cover"${coverStyle(cvImg(r.image, 'small'))}></div><div class="body">
+        <div class="card"><div class="cover"${coverStyle(cvImg(r.image, 'small'), r.name)}></div><div class="body">
         <b>${esc(r.name)}</b><div class="muted small">${esc([r.start_year, r.publisher?.name, r.count_of_issues != null ? r.count_of_issues + (r.count_of_issues === 1 ? ' número' : ' números') : ''].filter(Boolean).join(' · '))}</div>
         <button class="btn small" style="margin-top:6px" data-act="auto-vol" data-id="${esc(bookId)}" data-vol="${r.id}">Es esta edición</button></div></div>`).join('')}</div>`
         : '<div class="empty">Sin resultados. Prueba con otro título.</div>';
@@ -792,7 +854,7 @@ async function renderSuggestions(res, bookId, groups, introHtml) {
     ${found.map((g, gi) => `<h3 style="margin:14px 0 4px"><label style="cursor:pointer"><input type="checkbox" data-group="${gi}" checked>
       ${esc(g.volume.name)} <span class="muted small">(${esc(g.volume.start_year || '')}${g.volume.publisher ? ', ' + esc(g.volume.publisher) : ''}) · ${esc(rng(g))}</span></label></h3>
       ${g.issues.map((r) => `<div class="issue-row"><label><input type="checkbox" value="${r.id}" data-in="${gi}" ${have.has(r.id) ? 'disabled' : 'checked'}>
-        <span class="cover"${coverStyle(cvImg(r.image, 'thumb'))} style="width:32px"></span>
+        <span class="cover"${coverStyle(cvImg(r.image, 'thumb'), issueNum(r.issue_number))} style="width:32px"></span>
         <span class="grow"><b>${esc(issueNum(r.issue_number))}</b> <span class="muted small">${esc([r.name, fmtDate(r.cover_date)].filter(Boolean).join(' · '))}${have.has(r.id) ? ' · ya vinculado' : ''}</span></span></label></div>`).join('')}`).join('')}
     ${missing.length ? `<p class="small muted">No he encontrado en Comic Vine: ${missing.map((g) => esc(`${g.series} ${rng(g)}`)).join('; ')}. Puedes añadirlos con «Vincular a mano».</p>` : ''}
     <div class="row" style="margin-top:10px;position:sticky;bottom:0;background:var(--surface);padding:10px 0"><button class="btn primary" id="aadd">Añadir seleccionados</button>
@@ -858,7 +920,7 @@ function openLinker(bookId) {
     try {
       const d = await api(`/cv/search?type=volume&q=${enc(q.value.trim())}`);
       res.innerHTML = d.results.length ? `<div class="list">${d.results.map((r) => `
-        <div class="card"><div class="cover"${coverStyle(cvImg(r.image, 'small'))}></div><div class="body">
+        <div class="card"><div class="cover"${coverStyle(cvImg(r.image, 'small'), r.name)}></div><div class="body">
         <b>${esc(r.name)}</b><div class="muted small">${esc([r.start_year, r.publisher?.name, r.count_of_issues != null ? r.count_of_issues + ' números' : ''].filter(Boolean).join(' · '))}</div>
         <button class="btn small" style="margin-top:6px" data-act="link-vol" data-id="${esc(bookId)}" data-vol="${r.id}">Elegir números</button></div></div>`).join('')}</div>`
         : '<div class="empty">Sin resultados</div>';
@@ -884,7 +946,7 @@ async function linkVolume(bookId, volId) {
     res.innerHTML = `<div class="row small" style="margin-bottom:8px">Del <input type="number" id="rfrom" min="0"> al <input type="number" id="rto" min="0">
       <button class="btn small" id="rsel">Marcar rango</button></div>
       <div id="ilist">${issues.map((r) => `<div class="issue-row"><label><input type="checkbox" value="${r.id}" data-num="${esc(r.issue_number)}" ${have.has(r.id) ? 'checked disabled' : ''}>
-        <span class="cover"${coverStyle(cvImg(r.image, 'thumb'))} style="width:32px"></span>
+        <span class="cover"${coverStyle(cvImg(r.image, 'thumb'), issueNum(r.issue_number))} style="width:32px"></span>
         <span class="grow"><b>${esc(issueNum(r.issue_number))}</b> <span class="muted small">${esc([r.name, fmtDate(r.cover_date)].filter(Boolean).join(' · '))}</span></span></label></div>`).join('')}</div>
       <div class="row" style="margin-top:10px"><button class="btn primary" id="ladd">Añadir seleccionados</button></div>`;
     document.getElementById('rsel').onclick = () => {
@@ -911,7 +973,7 @@ async function unlink(bookId, cvId) {
 function issueRow(r) {
   const b = issueBase(r);
   const tomos = tomosWith(r.id);
-  return `<div class="issue-row"><a href="#/issue/${r.id}" class="cover"${coverStyle(b.data.cover)}></a>
+  return `<div class="issue-row"><a href="#/issue/${r.id}" class="cover"${coverStyle(b.data.cover, b.title)}></a>
     <div class="grow"><a href="#/issue/${r.id}" style="text-decoration:none"><b>${esc(r.volume?.name && r.volume.name !== ui.ctxVolume ? r.volume.name + ' ' : '')}${esc(issueNum(r.issue_number))}</b>
     <span class="muted small">${esc([r.name, fmtDate(r.cover_date)].filter(Boolean).join(' · '))}</span></a><br>
     ${tomos.map((t) => `<a class="badge tomo" href="#/book/${enc(t.id)}" title="${esc(t.title)}">📚 ${esc(t.title.slice(0, 28))}</a>`).join('')}
@@ -948,7 +1010,7 @@ function issueListBlock(issues) {
 }
 
 function header(img, title, sub, desc, url) {
-  return `<div class="detail"><div class="cover"${coverStyle(img)}></div><div><h2>${esc(title)}</h2>
+  return `<div class="detail"><div class="cover"${coverStyle(img, title)}></div><div><h2>${esc(title)}</h2>
     <div class="muted small">${sub}</div>
     ${url ? `<p class="small"><a href="${esc(url)}" target="_blank" rel="noopener">Ver en Comic Vine ↗</a></p>` : ''}</div></div>
     ${desc ? `<details><summary>Descripción</summary><p class="desc">${esc(htmlToText(desc).slice(0, 4000))}</p></details>` : ''}`;
@@ -988,7 +1050,7 @@ async function viewIssue(id) {
   const ROLE_ES = { writer: 'Guion', penciler: 'Dibujo', artist: 'Arte', inker: 'Tinta', colorist: 'Color', letterer: 'Rotulación',
     cover: 'Portada', editor: 'Edición', 'penciller': 'Dibujo' };
   const tomos = tomosWith(r.id);
-  $main.innerHTML = `<div class="detail"><div class="cover"${coverStyle(cvImg(r.image))}></div><div>
+  $main.innerHTML = `<div class="detail"><div class="cover"${coverStyle(cvImg(r.image), b.title)}></div><div>
     <h2>${esc(b.title)}</h2>${r.name ? `<div><i>${esc(r.name)}</i></div>` : ''}
     ${chips(b.id, true)}
     <dl class="info">
@@ -1072,18 +1134,31 @@ function viewCollection() {
 
 function itemTile(i) {
   const href = i.kind === 'book' ? `#/book/${enc(i.id)}` : `#/issue/${i.data.cvId}`;
-  return `<a class="tile" href="${href}"><span class="cover"${coverStyle(i.data.cover)}></span>
+  return `<a class="tile" href="${href}"><span class="cover"${coverStyle(i.data.cover, i.title, i.id)}></span>
     <span class="t">${esc(i.title)}</span><span class="dots">${FLAGS.filter((k) => i[k]).map((k) => `<i class="dot ${k}" title="${LABEL[k]}"></i>`).join('')}</span></a>`;
 }
 
 // ---------- characters ----------
 // Character of an item: the one typed by the user, else guessed from the title / series name:
 // "Green Lantern: Rebirth Compendium" -> "Green Lantern"; "Batman año uno" with Batman issues linked -> "Batman".
-const prefix = (s) => String(s || '').split(/\s*[:–]\s|\s+-\s/)[0].replace(/\s+(?:vol\.?|volume|v\.)\s*\d+.*$/i, '').replace(/\s*[#(].*$/, '').trim();
+// Publisher collection names that start many Spanish titles ("Marvel Gold. La Imposible Patrulla-X 5").
+const LINE_PREFIX = /^(?:reedici[oó]n\s+)?(?:(?:marvel|dc)\s+(?:gold|must[- ]have|deluxe|omnibus|limited|premiere|saga|integral|essentials?|black label|pocket|heroes|héroes|facsímil|facsimil|biblioteca)|biblioteca marvel|100%\s*marvel|marvel|dc(?: comics)?|omnibus|colecci[oó]n\s+\w+)\s*[.:\-–]\s*|^(?:marvel|dc)\s+(?:gold|must[- ]have|deluxe|omnibus|limited)\s+/i;
+const prefix = (s) => {
+  let t = String(s || '').trim();
+  for (let i = 0; i < 3; i++) { const u = t.replace(LINE_PREFIX, ''); if (u === t || !u) break; t = u; }
+  t = t.split(/\s*[:–(#¡¿!?]\s*|\s+-\s+|\.\s+|\s+n[º°o]\.?\s*\d/i)[0]
+    .replace(/\s+(?:vol\.?|volume|v\.|tomo)\s*\d+.*$/i, '')
+    .replace(/[\s-]+\d+$/, '') // "Patrulla-X 5", "Patrulla X-8"
+    .trim();
+  return t.charAt(0).toUpperCase() + t.slice(1);
+};
+// "LA IMPOSIBLE PATRULLA-X" -> "La Imposible Patrulla-X" (only when shouting)
+const tidyName = (s) => (s === s.toUpperCase() && /[A-Z]{3}/.test(s)
+  ? s.toLowerCase().replace(/(^|[\s\-/])([a-záéíóúñ])/g, (m, a, b) => a + b.toUpperCase()) : s);
 function charOf(it) {
   if (it.data.character) return it.data.character.trim();
   if (it.kind === 'issue') return prefix(it.data.volume?.name || it.title);
-  if (/[:–]\s/.test(it.title)) return prefix(it.title);
+  if (/[:–]\s|\.\s|\s\d+\b|^(?:marvel|dc)\b/i.test(it.title)) return prefix(it.title);
   // no subtitle: use the most linked original series, if its name starts the title
   const counts = {};
   (it.data.contains || []).forEach((c) => { const p = prefix(c.volume?.name); if (p) counts[p] = (counts[p] || 0) + 1; });
@@ -1098,7 +1173,9 @@ function charGroups(items) {
   for (const it of items) {
     const name = charOf(it) || 'Sin personaje';
     const k = charKey(name);
-    const g = m.get(k) || { name, key: k, items: [] };
+    const g = m.get(k) || { name: tidyName(name), key: k, items: [] };
+    // prefer a nicely-cased spelling for the group's name
+    if (g.name === g.name.toUpperCase() && name !== name.toUpperCase()) g.name = name;
     g.items.push(it);
     m.set(k, g);
   }
@@ -1113,11 +1190,14 @@ function groupCounts(items) {
 }
 
 function charTile(g) {
-  const covers = g.items.map((i) => i.data.cover).filter((u) => u && !isPlaceholder(u)).slice(0, 3);
+  // real covers first; items without one still show (as placeholders) so every group has a stack
+  // (Open Library "?default=false" links are guesses that often turn out to be missing)
+  const rank = (i) => (!i.data.cover ? 0 : /default=false/.test(i.data.cover) ? 1 : 2);
+  const covers = g.items.slice().sort((a, b) => rank(b) - rank(a)).slice(0, 3);
   const c = groupCounts(g.items);
   const sub = [c.books ? `${c.books} ${c.books === 1 ? 'tomo' : 'tomos'}` : '', c.issues ? `${c.issues} números` : ''].filter(Boolean).join(' · ');
   return `<a class="tile char" href="#/char/${enc(g.key)}">
-    <span class="stack">${(covers.length ? covers : ['']).map((u, n) => `<span class="cover" style="--n:${n};${u ? `background-image:url('${esc(u).replace(/'/g, '%27')}')` : ''}"></span>`).join('')}</span>
+    <span class="stack">${covers.map((i, n) => `<span class="cover" style="--n:${n}"${coverStyle(i.data.cover, i.title, i.id)}></span>`).join('')}</span>
     <span class="t">${esc(g.name)}</span><span class="muted small">${esc(sub)}</span></a>`;
 }
 
