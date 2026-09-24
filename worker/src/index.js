@@ -88,10 +88,28 @@ async function route([area, a, b], url, req, env) {
   // ---- Books (ISBN / Spanish editions) ----
   if (area === 'isbn') return json(await isbnLookup(env, String(a || '').replace(/[^0-9Xx]/g, '')));
   if (area === 'books' && a === 'search') {
-    // Open Library search: one result per work, using the best-matching edition (Spanish preferred)
-    const params = new URLSearchParams({ q: q.get('q') || '', limit: '20', page: String(int(q.get('page')) || 1), lang: 'es', fields: OL_FIELDS });
-    const data = await cached(env, `ol:${params}`, DAY, () => getJson(`https://openlibrary.org/search.json?${params}`));
-    return json({ results: (data.docs || []).map(olToBook), total: data.numFound || 0 });
+    const text = q.get('q') || '';
+    const page = int(q.get('page')) || 1;
+    // Google Books knows far more Spanish tomos; Open Library adds what Google misses. Deduplicated by ISBN.
+    const [g, o] = await Promise.all([
+      googleSearch(env, text, page).catch(() => ({ results: [], total: 0 })),
+      (async () => {
+        // Open Library: one result per work, using the best-matching edition (Spanish preferred)
+        const params = new URLSearchParams({ q: text, limit: '20', page: String(page), lang: 'es', fields: OL_FIELDS });
+        const data = await cached(env, `ol:${params}`, DAY, () => getJson(`https://openlibrary.org/search.json?${params}`));
+        return { results: (data.docs || []).map(olToBook), total: data.numFound || 0 };
+      })().catch(() => ({ results: [], total: 0 })),
+    ]);
+    const seenIsbn = new Set();
+    // no cover from Google: try Open Library's cover-by-ISBN (404 -> the app shows the empty placeholder)
+    g.results.forEach((b) => { if (!b.cover && b.isbn) b.cover = `https://covers.openlibrary.org/b/isbn/${b.isbn}-M.jpg?default=false`; });
+    const results = [...g.results, ...o.results].filter((b) => {
+      if (!b.isbn) return true;
+      if (seenIsbn.has(b.isbn)) return false;
+      seenIsbn.add(b.isbn);
+      return true;
+    });
+    return json({ results, more: g.results.length >= 20 || o.results.length >= 20 });
   }
 
   // ---- Collection ----
@@ -200,6 +218,48 @@ function gbToBook(it) {
 const OL_FIELDS = 'key,title,subtitle,author_name,cover_i,first_publish_year,editions,editions.key,editions.title,editions.subtitle,'
   + 'editions.publisher,editions.isbn,editions.publish_date,editions.cover_i,editions.language,editions.number_of_pages_median';
 
+// ---------- Google Books ----------
+// With a GB_KEY secret: the official API (v1). Without it: Google's old public Atom feed
+// (books/feeds/volumes), which needs no key but is undocumented and could disappear any day.
+async function googleSearch(env, text, page) {
+  const key = clean(env.GB_KEY);
+  if (key) {
+    const params = new URLSearchParams({ q: text, maxResults: '20', printType: 'books', startIndex: String((page - 1) * 20), key });
+    const d = await cached(env, `gb:${text}|${page}`, DAY, () => getJson(`https://www.googleapis.com/books/v1/volumes?${params}`));
+    return { results: (d.items || []).map(gbToBook), total: d.totalItems || 0 };
+  }
+  return googleFeed(env, text, page);
+}
+
+const xmlDecode = (s) => String(s || '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+  .replace(/&#39;|&apos;/g, "'").replace(/&#(\d+);/g, (_, n) => String.fromCharCode(+n)).replace(/&amp;/g, '&').trim();
+
+async function googleFeed(env, text, page) {
+  const params = new URLSearchParams({ q: text, 'max-results': '20', 'start-index': String((page - 1) * 20 + 1) });
+  const xml = await cached(env, `gfeed:${params}`, DAY, async () => {
+    const r = await fetch(`https://www.google.com/books/feeds/volumes?${params}`, { headers: { 'User-Agent': UA } });
+    if (!r.ok) throw new Error(`Google Books respondió ${r.status}`);
+    return r.text();
+  });
+  const entries = String(xml).split('<entry>').slice(1);
+  const all = (e, t) => [...e.matchAll(new RegExp(`<${t}[^>]*>([\\s\\S]*?)</${t}>`, 'g'))].map((m) => xmlDecode(m[1]));
+  const results = entries.map((e) => {
+    const ids = all(e, 'dc:identifier');
+    const isbns = ids.filter((i) => i.startsWith('ISBN:')).map((i) => i.slice(5));
+    const thumb = (e.match(/<link rel='http:\/\/schemas\.google\.com\/books\/2008\/thumbnail'[^>]*href='([^']+)'/) || [])[1];
+    const pages = +((all(e, 'dc:format').find((f) => /pages/.test(f)) || '').match(/\d+/) || [0])[0];
+    return {
+      source: 'google', gid: ids[0] || '', isbn: isbns.find((i) => i.length === 13) || isbns[0] || '',
+      title: all(e, 'dc:title').join(': ') || all(e, 'title')[0] || '',
+      authors: all(e, 'dc:creator'), publisher: all(e, 'dc:publisher')[0] || '', date: all(e, 'dc:date')[0] || '',
+      pages: pages || null, language: all(e, 'dc:language')[0] || '', description: all(e, 'dc:description')[0] || '',
+      cover: thumb ? xmlDecode(thumb).replace(/^http:/, 'https:').replace(/&zoom=\d/, '&zoom=1') : '',
+    };
+  });
+  const total = +((String(xml).match(/<openSearch:totalResults>(\d+)/) || [])[1] || 0);
+  return { results, total };
+}
+
 // "Daredevil: Born Again" + "Born Again" -> no repeated subtitle
 const joinTitle = (t, sub) => (sub && !String(t || '').toLowerCase().includes(sub.toLowerCase()) ? `${t}: ${sub}` : t || '');
 
@@ -224,12 +284,13 @@ async function isbnLookup(env, isbn) {
   // Google Books' anonymous quota is shared and usually exhausted: only used with a GB_KEY secret.
   const gbKey = clean(env.GB_KEY);
   const [gb, ol, ols] = await Promise.all([
-    gbKey ? cached(env, `gbisbn:${isbn}`, 7 * DAY, () => getJson(`https://www.googleapis.com/books/v1/volumes?q=isbn:${isbn}&key=${gbKey}`)).catch(() => ({})) : {},
+    gbKey ? cached(env, `gbisbn:${isbn}`, 7 * DAY, () => getJson(`https://www.googleapis.com/books/v1/volumes?q=isbn:${isbn}&key=${gbKey}`)).catch(() => ({}))
+      : googleFeed(env, `isbn:${isbn}`, 1).then((r) => ({ feed: r.results })).catch(() => ({})),
     cached(env, `olisbn:${isbn}`, 7 * DAY, () => getJson(`https://openlibrary.org/api/books?bibkeys=ISBN:${isbn}&format=json&jscmd=data`)).catch(() => ({})),
     // the search index knows ISBNs the books API sometimes misses
     cached(env, `olsisbn:${isbn}`, 7 * DAY, () => getJson(`https://openlibrary.org/search.json?${new URLSearchParams({ isbn, limit: '1', fields: OL_FIELDS })}`)).catch(() => ({})),
   ]);
-  const g = gb.items && gb.items[0] ? gbToBook(gb.items[0]) : null;
+  const g = gb.items && gb.items[0] ? gbToBook(gb.items[0]) : gb.feed && gb.feed[0] ? gb.feed[0] : null;
   const s = ols.docs && ols.docs[0] ? olToBook(ols.docs[0]) : null;
   const o = ol[`ISBN:${isbn}`];
   if (!g && !o && !s) return { found: false, isbn };
@@ -244,6 +305,7 @@ async function isbnLookup(env, isbn) {
     book.pages = book.pages || o.number_of_pages || null;
     book.cover = book.cover || (o.cover && (o.cover.large || o.cover.medium)) || '';
   }
+  if (!book.cover) book.cover = `https://covers.openlibrary.org/b/isbn/${isbn}-M.jpg?default=false`;
   return { found: true, isbn, book };
 }
 

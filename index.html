@@ -347,7 +347,7 @@ function viewSearch() {
     </form>
     <div class="seg" id="modes">${MODES.map(([k, l]) => `<button type="button" data-mode="${k}" class="${ui.searchMode === k ? 'on' : ''}">${l}</button>`).join('')}</div>
     <p class="muted small">${ui.searchMode === 'books'
-      ? 'Tomos en español o inglés por título o ISBN (Open Library).'
+      ? 'Tomos en español o inglés por título o ISBN (Google Books y Open Library).'
       : 'Ediciones originales (americanas) desde Comic Vine.'}</p>
     <div id="results"></div>`;
   document.getElementById('modes').onclick = (e) => {
@@ -373,7 +373,9 @@ async function runSearch(q, mode, page) {
       ? await api(`/books/search?q=${enc(q)}&page=${page}`)
       : await api(`/cv/search?type=${mode}&q=${enc(q)}&page=${page}`);
     const prev = page > 1 && ui.lastSearch ? ui.lastSearch.results : [];
-    ui.lastSearch = { q, mode, page, results: prev.concat(d.results || []), total: d.total };
+    const known = new Set(prev.map((r) => r.isbn || r.gid || r.id).filter(Boolean));
+    const fresh = (d.results || []).filter((r) => { const k = r.isbn || r.gid || r.id; return !k || !known.has(k); });
+    ui.lastSearch = { q, mode, page, results: prev.concat(fresh), total: d.total, more: d.more };
     renderResults();
   } catch (e) { box.innerHTML = `<div class="empty">⚠️ ${esc(e.message)}</div>`; }
 }
@@ -385,7 +387,7 @@ function renderResults() {
     box.innerHTML = `<div class="empty">Sin resultados.${mode === 'books' ? `<br><br><button class="btn" data-act="manual">Añadir un tomo a mano</button>` : ''}</div>`;
     return;
   }
-  const more = mode === 'books' ? results.length >= page * 20 : total > results.length;
+  const more = mode === 'books' ? !!ui.lastSearch.more : total > results.length;
   box.innerHTML = `<div class="list">${results.map((r) => resultCard(r, mode)).join('')}</div>
     <div class="row" style="justify-content:center;margin-top:14px">
       ${more ? '<button class="btn" id="more">Cargar más</button>' : ''}
