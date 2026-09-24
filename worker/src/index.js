@@ -73,6 +73,7 @@ async function route([area, a, b], url, req, env) {
         filter: `id:${ids.join('|')}`, limit: '100', field_list: CV_FIELDS.issues,
       }, 7 * DAY));
     }
+    if (a === 'collects') return json(await collects(env, int(q.get('volume'))));
     if (CV_TYPES[a]) {
       return json(await cv(env, `/${a}/${CV_TYPES[a]}-${int(b)}/`, { field_list: CV_FIELDS[a] }, 7 * DAY));
     }
@@ -217,4 +218,138 @@ async function isbnLookup(env, isbn) {
     book.cover = book.cover || (o.cover && (o.cover.large || o.cover.medium)) || '';
   }
   return { found: true, isbn, book };
+}
+
+// ---------- "Collects: Batman #404-407" -> original Comic Vine issues ----------
+
+const htmlText = (h) => String(h || '')
+  .replace(/<\/(p|h\d|li|div)>|<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, ' ')
+  .replace(/&amp;/g, '&').replace(/&#0?39;|&rsquo;/g, "'").replace(/&quot;/g, '"').replace(/&nbsp;/g, ' ')
+  .replace(/[ \t]+/g, ' ');
+
+// Series names are runs of Capitalized Words (with small connectors), right before the numbers.
+const SERIES = String.raw`[A-Z][\w'’.:\/-]*(?:\s+(?:(?:of|the|and|in|vs\.?|de|del|la|el|los)\s+)*[A-Z][\w'’.:\/-]*)*`;
+const PIECE = new RegExp(String.raw`(${SERIES})?\s*(?:\(([^)]*)\)\s*)?(?:Vol(?:ume)?\.?\s*\d+\s*)?(?:#\s*|\b)(\d{1,4}(?:\.\d)?)(?:\s*(?:-|–|to|through)\s*#?\s*(\d{1,4}(?:\.\d)?))?`);
+const JUNK = /^(?:Collects|Collecting|Collected|Issues?|Includes|Including|Featuring|Plus|Material|Stories|From|Originally|And|The|This|Volume|Vol\.?|Book|Part|Chapter|TPB|HC|Recopila|Contiene|Incluye|Los|Las|El|La|USA|Números?|Nº)$/i;
+
+function parseCollects(text) {
+  const out = [];
+  const re = /(?:collect(?:s|ing|ed)?|recopila(?:n|ndo)?|contiene|incluye)\b([\s\S]{0,600}?)(?:[.!](?:\s|$)|\n|$)/gi;
+  let m;
+  while ((m = re.exec(text))) {
+    let series = '', year = '';
+    for (const piece of m[1].split(/,|;|\band\b|&|\bplus\b/i)) {
+      const p = PIECE.exec(piece);
+      if (!p) continue;
+      let name = (p[1] || '').trim().replace(/[:.]+$/, '');
+      // drop leading filler words ("Collects", "The" ...)
+      const words = name.split(/\s+/).filter(Boolean);
+      while (words.length && JUNK.test(words[0])) words.shift();
+      name = words.join(' ').replace(/\s+(?:USA|US)$/, ''); // Spanish editions: "Batman USA #404"
+      const y = ((p[2] || '').match(/\b(19|20)\d{2}\b/) || [])[0] || '';
+      if (name) { series = name; year = y; } else if (y) year = y;
+      const from = parseFloat(p[3]);
+      const to = p[4] ? parseFloat(p[4]) : from;
+      if (!series || isNaN(from) || to < from || to - from > 200) continue;
+      if (from >= 1900 && from <= 2099 && !p[4]) continue; // a lone year, not an issue
+      out.push({ series, year, from, to });
+    }
+  }
+  const seen = new Set();
+  return out.filter((g) => { const k = `${g.series}|${g.year}|${g.from}|${g.to}`; return !seen.has(k) && seen.add(k); });
+}
+
+function mergeRanges(rs) {
+  const s = rs.slice().sort((a, b) => a[0] - b[0]);
+  const out = [];
+  for (const r of s) {
+    const last = out[out.length - 1];
+    if (last && r[0] <= last[1] + 1) last[1] = Math.max(last[1], r[1]); else out.push([...r]);
+  }
+  return out;
+}
+
+const norm = (s) => String(s || '').toLowerCase().replace(/^the\s+/, '').replace(/[^a-z0-9]+/g, ' ').trim();
+
+// Pick the Comic Vine volume a collected edition refers to ("Green Lantern" #21-25 in a 2008 DC book
+// -> Green Lantern (2005), not the 1960 or 2011 runs, nor foreign reprints).
+async function resolveVolume(env, series, year, maxNum, ctxYear, publisher) {
+  // "Green Lantern: Sinestro Corps Special" is filed as "Sinestro Corps Special": also try the part after ':'
+  const names = [series, ...series.split(':').slice(1).map((s) => s.trim()).filter(Boolean)];
+  for (const name of names) {
+    const d = await cv(env, '/search/', { query: name, resources: 'volume', limit: '50', field_list: 'id,name,start_year,count_of_issues,publisher' }, 7 * DAY);
+    let c = (d.results || []).filter((v) => norm(v.name) === norm(name));
+    if (!c.length) continue;
+    const pick = (f) => { const r = c.filter(f); if (r.length) c = r; };
+    if (publisher) pick((v) => v.publisher?.name === publisher);
+    if (year) pick((v) => String(v.start_year) === year);
+    pick((v) => (v.count_of_issues || 0) >= maxNum);
+    if (ctxYear) pick((v) => !v.start_year || +v.start_year <= ctxYear);
+    c.sort((a, b) => (+b.start_year || 0) - (+a.start_year || 0));
+    if (!ctxYear || c.length === 1) return c[0];
+    // most recent run whose issue #maxNum already existed when the collection came out
+    for (const v of c.slice(0, 5)) {
+      const r = await cv(env, '/issues/', { filter: `volume:${v.id},issue_number:${maxNum}`, field_list: 'id,cover_date' }, 7 * DAY);
+      const y = +((r.results || [])[0]?.cover_date || '').slice(0, 4);
+      if (y && y <= ctxYear) return v;
+    }
+    return c[c.length - 1];
+  }
+  return null;
+}
+
+async function volumeIssues(env, volId) {
+  let all = [], offset = 0, total = 1;
+  while (offset < total && offset < 1200) {
+    const d = await cv(env, '/issues/', { filter: `volume:${volId}`, sort: 'cover_date:asc', limit: '100', offset: String(offset), field_list: CV_FIELDS.issues }, DAY);
+    all = all.concat(d.results || []); total = d.total || 0; offset += 100;
+  }
+  return all;
+}
+
+async function collects(env, volId) {
+  if (!volId) return { error: 'missing volume' };
+  const [vol, iss] = await Promise.all([
+    cv(env, `/volume/4050-${volId}/`, { field_list: 'id,name,start_year,description,deck,publisher' }, 7 * DAY),
+    cv(env, '/issues/', { filter: `volume:${volId}`, limit: '10', field_list: 'id,issue_number,description,deck,cover_date' }, 7 * DAY),
+  ]);
+  const v = vol.results || {};
+  const text = [v.description, v.deck, ...(iss.results || []).flatMap((i) => [i.description, i.deck])].map(htmlText).filter(Boolean).join('\n');
+  const groups = parseCollects(text);
+  const ctxYear = +v.start_year || +((iss.results || [])[0]?.cover_date || '').slice(0, 4) || 0;
+  const snippet = (text.match(/[^\n]{0,60}(?:collect|recopila|contiene|incluye)[^\n]{0,260}/i) || [''])[0].trim();
+
+  // resolve each series once, then pick its numbers
+  const bySeries = new Map();
+  for (const g of groups) {
+    const k = `${norm(g.series)}|${g.year}`;
+    const e = bySeries.get(k) || { series: g.series, year: g.year, ranges: [] };
+    e.ranges.push([g.from, g.to]);
+    bySeries.set(k, e);
+  }
+  // "Green Lantern: Sinestro Corps Special" and "Sinestro Corps Special" are the same book
+  const keys = [...bySeries.keys()];
+  for (const k of keys) {
+    const [n] = k.split('|');
+    if (keys.some((o) => o !== k && bySeries.has(o) && n.endsWith(' ' + o.split('|')[0]))) bySeries.delete(k);
+  }
+  const result = [];
+  const volIds = new Set();
+  for (const e of bySeries.values()) {
+    const ranges = mergeRanges(e.ranges);
+    const maxNum = Math.max(...ranges.map((r) => r[1]));
+    const found = await resolveVolume(env, e.series, e.year, maxNum, ctxYear, v.publisher?.name).catch(() => null);
+    if (found && volIds.has(found.id)) continue;
+    if (found) volIds.add(found.id);
+    const issues = found ? (await volumeIssues(env, found.id)).filter((i) => {
+      const n = parseFloat(i.issue_number);
+      // 23.1-23.4 style specials only when explicitly listed
+      return ranges.some(([a, b]) => n >= a && n <= b && (Number.isInteger(n) || n === a || n === b));
+    }) : [];
+    result.push({
+      series: e.series, ranges, issues,
+      volume: found ? { id: found.id, name: found.name, start_year: found.start_year, publisher: found.publisher?.name || '' } : null,
+    });
+  }
+  return { volume: { id: v.id, name: v.name, start_year: v.start_year }, snippet, groups: result };
 }

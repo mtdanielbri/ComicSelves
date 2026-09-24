@@ -437,7 +437,88 @@ async function viewBook(id) {
         <span class="muted small">${esc([c.name, fmtDate(c.date)].filter(Boolean).join(' · '))}</span></a>
         <button class="btn small" data-act="unlink" data-id="${esc(id)}" data-cv="${c.cvId}" title="Quitar">✕</button></div>`).join('')}</div>`
       : '<p class="muted small">Aún no has indicado qué números originales recopila este tomo.</p>'}
-    <div id="linker"><button class="btn" data-act="link-open" data-id="${esc(id)}">+ Vincular números originales</button></div>`;
+    <div id="linker" class="row">
+      <button class="btn primary" data-act="auto-open" data-id="${esc(id)}">✨ Detectar números automáticamente</button>
+      <button class="btn" data-act="link-open" data-id="${esc(id)}">+ Vincular a mano</button>
+    </div>`;
+}
+
+const cleanTitle = (t) => (t || '').replace(/\s*\(.*?\)|\bn[ºo°.]?\s*\d+|\d+$/gi, '').split(/[:\-–]/)[0].trim();
+
+async function addContains(bookId, picked) {
+  const base = itemOf(bookId);
+  const cur = coll.get(bookId);
+  const it = cur ? { ...cur } : { ...base, owned: true, read: false, pending: false };
+  it.data = { ...base.data, ...(cur?.data || {}) };
+  const have = new Set((it.data.contains || []).map((c) => c.cvId));
+  const add = picked.filter((c) => !have.has(c.cvId));
+  it.data.contains = (it.data.contains || []).concat(add);
+  await persist(it);
+  toast(`${add.length} números vinculados`);
+  viewBook(bookId);
+}
+const toContains = (r) => ({ cvId: r.id, volume: { id: r.volume?.id, name: r.volume?.name }, number: r.issue_number, name: r.name || '', date: r.cover_date || '' });
+
+// Auto-detect: pick the matching edition in Comic Vine, read its "Collects: ..." text, propose the issues.
+function openAuto(bookId) {
+  const box = document.getElementById('linker');
+  const it = itemOf(bookId);
+  box.outerHTML = `<div id="linker" class="panel">
+    <b>¿Qué edición es?</b>
+    <p class="muted small">Busca este tomo en Comic Vine. Si es una edición española y no aparece, prueba con el título original en inglés
+      (p. ej. <i>Batman: Año uno</i> → <i>Batman: Year One</i>).</p>
+    <form class="row" id="aform"><input type="search" id="aq" class="grow" autocomplete="off">
+    <button class="btn primary">Buscar</button></form><div id="ares" style="margin-top:10px"></div></div>`;
+  const q = document.getElementById('aq');
+  q.value = (it?.title || '').replace(/\s*\(.*?\)/g, '').trim();
+  const form = document.getElementById('aform');
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const res = document.getElementById('ares');
+    res.innerHTML = spinner();
+    try {
+      const d = await api(`/cv/search?type=volume&q=${enc(q.value.trim())}`);
+      // collected editions are filed as 1-3 issue volumes: show those first
+      const list = d.results.slice().sort((a, b) => ((a.count_of_issues || 99) <= 3 ? 0 : 1) - ((b.count_of_issues || 99) <= 3 ? 0 : 1));
+      res.innerHTML = list.length ? `<div class="list">${list.map((r) => `
+        <div class="card"><div class="cover"${coverStyle(cvImg(r.image, 'small'))}></div><div class="body">
+        <b>${esc(r.name)}</b><div class="muted small">${esc([r.start_year, r.publisher?.name, r.count_of_issues != null ? r.count_of_issues + (r.count_of_issues === 1 ? ' número' : ' números') : ''].filter(Boolean).join(' · '))}</div>
+        <button class="btn small" style="margin-top:6px" data-act="auto-vol" data-id="${esc(bookId)}" data-vol="${r.id}">Es esta edición</button></div></div>`).join('')}</div>`
+        : '<div class="empty">Sin resultados. Prueba con otro título.</div>';
+    } catch (err) { res.innerHTML = `<div class="empty">⚠️ ${esc(err.message)}</div>`; }
+  };
+  form.requestSubmit();
+}
+
+async function autoVolume(bookId, volId) {
+  const res = document.getElementById('ares');
+  res.innerHTML = `${spinner()}<p class="muted small" style="text-align:center">Leyendo qué recopila y buscando las series originales…</p>`;
+  try {
+    const d = await api(`/cv/collects?volume=${volId}`);
+    const have = new Set((itemOf(bookId).data.contains || []).map((c) => c.cvId));
+    const found = d.groups.filter((g) => g.issues.length);
+    const missing = d.groups.filter((g) => !g.issues.length);
+    if (!found.length) {
+      res.innerHTML = `<div class="empty">Comic Vine no dice qué números recopila <b>${esc(d.volume.name)}</b>.
+        ${d.snippet ? `<br><br><i class="small">“${esc(d.snippet)}”</i>` : ''}<br><br>
+        <button class="btn" data-act="link-open" data-id="${esc(bookId)}">Vincular a mano</button></div>`;
+      return;
+    }
+    const all = found.flatMap((g) => g.issues);
+    res.innerHTML = `${d.snippet ? `<p class="small muted">Según Comic Vine: <i>“${esc(d.snippet)}”</i></p>` : ''}
+      ${found.map((g) => `<h3 style="margin:12px 0 4px">${esc(g.volume.name)} <span class="muted small">(${esc(g.volume.start_year || '')}${g.volume.publisher ? ', ' + esc(g.volume.publisher) : ''})</span></h3>
+        ${g.issues.map((r) => `<div class="issue-row"><label><input type="checkbox" value="${r.id}" ${have.has(r.id) ? 'disabled' : 'checked'}>
+          <span class="cover"${coverStyle(cvImg(r.image, 'thumb'))} style="width:32px"></span>
+          <span class="grow"><b>${esc(issueNum(r.issue_number))}</b> <span class="muted small">${esc([r.name, fmtDate(r.cover_date)].filter(Boolean).join(' · '))}${have.has(r.id) ? ' · ya vinculado' : ''}</span></span></label></div>`).join('')}`).join('')}
+      ${missing.length ? `<p class="small muted">No he encontrado en Comic Vine: ${missing.map((g) => esc(`${g.series} ${g.ranges.map(([a, b]) => a === b ? '#' + a : `#${a}-${b}`).join(', ')}`)).join('; ')}. Puedes añadirlos con «Vincular a mano».</p>` : ''}
+      <div class="row" style="margin-top:10px"><button class="btn primary" id="aadd">Añadir seleccionados</button>
+      <button class="btn" data-act="link-open" data-id="${esc(bookId)}">Vincular a mano</button></div>`;
+    document.getElementById('aadd').onclick = async () => {
+      const ids = new Set([...res.querySelectorAll('input:checked:not(:disabled)')].map((cb) => +cb.value));
+      if (!ids.size) { toast('No has marcado ningún número'); return; }
+      try { await addContains(bookId, all.filter((r) => ids.has(r.id)).map(toContains)); } catch {}
+    };
+  } catch (err) { res.innerHTML = `<div class="empty">⚠️ ${esc(err.message)}</div>`; }
 }
 
 function bookForm(it) {
@@ -473,12 +554,12 @@ function bookForm(it) {
 // Link original issues to a tomo: search volume -> pick issues
 function openLinker(bookId) {
   const box = document.getElementById('linker');
-  box.innerHTML = `<div class="panel">
-    <form class="row" id="lform"><input type="search" id="lq" class="grow" placeholder="Serie original, p. ej. Daredevil 1964" autocomplete="off">
+  box.outerHTML = `<div id="linker" class="panel"><b>Vincular a mano</b>
+    <p class="muted small">Busca la serie original y marca los números que contiene el tomo.</p>
+    <form class="row" id="lform"><input type="search" id="lq" class="grow" placeholder="Serie original, p. ej. Daredevil" autocomplete="off">
     <button class="btn primary">Buscar serie</button></form><div id="lres" style="margin-top:10px"></div></div>`;
   const q = document.getElementById('lq');
-  const it = itemOf(bookId);
-  q.value = (it?.title || '').replace(/\s*\(.*?\)|\bn[ºo°.]?\s*\d+|\d+$/gi, '').split(/[:\-–]/)[0].trim();
+  q.value = cleanTitle(itemOf(bookId)?.title);
   q.focus();
   document.getElementById('lform').onsubmit = async (e) => {
     e.preventDefault();
@@ -525,15 +606,7 @@ async function linkVolume(bookId, volId) {
     document.getElementById('ladd').onclick = async () => {
       const ids = new Set([...res.querySelectorAll('#ilist input:checked:not(:disabled)')].map((cb) => +cb.value));
       if (!ids.size) { toast('No has marcado ningún número'); return; }
-      const picked = issues.filter((r) => ids.has(r.id)).map((r) => ({
-        cvId: r.id, volume: { id: r.volume?.id, name: r.volume?.name }, number: r.issue_number, name: r.name || '', date: r.cover_date || '',
-      }));
-      const base = itemOf(bookId);
-      const cur = coll.get(bookId);
-      const it = cur ? { ...cur } : { ...base, owned: true, read: false, pending: false };
-      it.data = { ...base.data, ...(cur?.data || {}) };
-      it.data.contains = (it.data.contains || []).concat(picked);
-      try { await persist(it); toast(`${picked.length} números vinculados`); viewBook(bookId); } catch {}
+      try { await addContains(bookId, issues.filter((r) => ids.has(r.id)).map(toContains)); } catch {}
     };
   } catch (err) { res.innerHTML = `<div class="empty">⚠️ ${esc(err.message)}</div>`; }
 }
@@ -746,6 +819,8 @@ document.addEventListener('click', (e) => {
   else if (act === 'manual') bookForm(el.dataset.isbn ? { id: undefined, title: '', data: { isbn: el.dataset.isbn } } : null);
   else if (act === 'edit-book') bookForm(itemOf(id));
   else if (act === 'link-open') openLinker(id);
+  else if (act === 'auto-open') openAuto(id);
+  else if (act === 'auto-vol') autoVolume(id, el.dataset.vol);
   else if (act === 'link-vol') linkVolume(id, el.dataset.vol);
   else if (act === 'unlink') unlink(id, +el.dataset.cv);
 });
