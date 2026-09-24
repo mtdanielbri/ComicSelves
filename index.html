@@ -431,16 +431,39 @@ async function viewBook(id) {
     </div>
     ${d.description ? `<details><summary>Sinopsis</summary><p class="desc">${esc(htmlToText(d.description))}</p></details>` : ''}
     <h3>Contiene ${contains.length ? `<span class="muted small">(${contains.length} números)</span>` : ''}</h3>
-    ${contains.length ? `<div class="list">${contains.map((c) => `
-      <div class="issue-row"><a href="#/issue/${c.cvId}" class="grow" style="text-decoration:none">
-        <b>${esc(c.volume?.name || '')} ${esc(issueNum(c.number))}</b>
+    ${contains.length ? `<div>${contains.map((c) => `
+      <div class="issue-row"><a href="#/issue/${c.cvId}" class="cover"${coverStyle(c.cover)}></a>
+        <a href="#/issue/${c.cvId}" class="grow" style="text-decoration:none">
+        <b>${esc(c.volume?.name || '')} ${esc(issueNum(c.number))}</b><br>
         <span class="muted small">${esc([c.name, fmtDate(c.date)].filter(Boolean).join(' · '))}</span></a>
         <button class="btn small" data-act="unlink" data-id="${esc(id)}" data-cv="${c.cvId}" title="Quitar">✕</button></div>`).join('')}</div>`
       : '<p class="muted small">Aún no has indicado qué números originales recopila este tomo.</p>'}
+    ${backfillCovers(id) || ''}
     <div id="linker" class="row">
       <button class="btn primary" data-act="auto-open" data-id="${esc(id)}">✨ Detectar números automáticamente</button>
       <button class="btn" data-act="link-open" data-id="${esc(id)}">+ Vincular a mano</button>
     </div>`;
+}
+
+// Links saved before covers were stored: fetch their covers once and save them.
+function backfillCovers(bookId) {
+  const cur = coll.get(bookId);
+  const missing = (cur?.data.contains || []).filter((c) => c.cover === undefined);
+  if (!missing.length || backfillCovers.busy) return;
+  backfillCovers.busy = true;
+  (async () => {
+    try {
+      const covers = new Map();
+      for (let i = 0; i < missing.length; i += 100) {
+        const d = await api(`/cv/issues-by-id?ids=${missing.slice(i, i + 100).map((c) => c.cvId).join('|')}`);
+        d.results.forEach((r) => covers.set(r.id, cvImg(r.image, 'small')));
+      }
+      const now = coll.get(bookId);
+      const it = { ...now, data: { ...now.data, contains: now.data.contains.map((c) => (c.cover === undefined ? { ...c, cover: covers.get(c.cvId) || '' } : c)) } };
+      await persist(it);
+      if (location.hash === `#/book/${enc(bookId)}`) viewBook(bookId);
+    } catch {} finally { backfillCovers.busy = false; }
+  })();
 }
 
 const cleanTitle = (t) => (t || '').replace(/\s*\(.*?\)|\bn[ºo°.]?\s*\d+|\d+$/gi, '').split(/[:\-–]/)[0].trim();
@@ -457,7 +480,7 @@ async function addContains(bookId, picked) {
   toast(`${add.length} números vinculados`);
   viewBook(bookId);
 }
-const toContains = (r) => ({ cvId: r.id, volume: { id: r.volume?.id, name: r.volume?.name }, number: r.issue_number, name: r.name || '', date: r.cover_date || '' });
+const toContains = (r) => ({ cvId: r.id, volume: { id: r.volume?.id, name: r.volume?.name }, number: r.issue_number, name: r.name || '', date: r.cover_date || '', cover: cvImg(r.image, 'small') });
 
 // Auto-detect: pick the matching edition in Comic Vine, read its "Collects: ..." text, propose the issues.
 function openAuto(bookId) {
